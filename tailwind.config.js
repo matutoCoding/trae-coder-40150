@@ -1,0 +1,85 @@
+/** @type {import('tailwindcss').Config} */
+
+export default {
+  darkMode: "class",
+  content: ["./index.html", "./src/**/*.{js,ts,jsx,tsx}"],
+  theme: {
+    container: {
+      center: true,
+    },
+    extend: {
+      colors: {
+        ink: {
+          50:  "#F5F7FA",
+          100: "#E8EDF3",
+          200: "#CBD5E0",
+          300: "#9AA8BA",
+          400: "#6B7A8C",
+          500: "#4A5568",
+          600: "#2D3748",
+          700: "#1E2939",
+          800: "#15202E",
+          900: "#0E1622",
+          950: "#080D14",
+        },
+        brand: {
+          50:  "#E8EEF7",
+          100: "#C5D2E8",
+          200: "#91A9D0",
+          300: "#5E80B6",
+          400: "#3A5E99",
+          500: "#1E3A5F",
+          600: "#182F4C",
+          700: "#12243A",
+          800: "#0C1A2B",
+          900: "#07101C",
+        },
+        amber: {
+          50:  "#FDF6E4",
+          100: "#FBE8B8",
+          200: "#F6D477",
+          300: "#F0BE44",
+          400: "#ECA926",
+          500: "#E8A838",
+          600: "#C78A1C",
+          700: "#9B6A11",
+          800: "#6E4B09",
+          900: "#442E04",
+        },
+        success: "#2E8B57",
+        warning: "#D97706",
+        danger:  "#DC2626",
+      },
+      fontFamily: {
+        sans: ['"Source Han Sans CN"', '"PingFang SC"', '"Microsoft YaHei"', "system-ui", "sans-serif"],
+        serif: ['"Source Han Serif CN"', '"Noto Serif SC"', '"Songti SC"', "Georgia", "serif"],
+        mono: ['"JetBrains Mono"', '"Cascadia Code"', "Consolas", "monospace"],
+      },
+      boxShadow: {
+        card: "0 4px 20px -6px rgba(30,58,95,0.15), 0 2px 6px -2px rgba(30,58,95,0.08)",
+        cardHover: "0 12px 32px -8px rgba(30,58,95,0.28), 0 4px 12px -4px rgba(30,58,95,0.12)",
+        glow: "0 0 16px rgba(232,168,56,0.45)",
+      },
+      backgroundImage: {
+        "brand-gradient": "linear-gradient(135deg, #1E3A5F 0%, #2C5282 55%, #3A5E99 100%)",
+        "brand-soft": "linear-gradient(135deg, #E8EEF7 0%, #F5F7FA 100%)",
+        "grain": "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.12 0 0 0 0 0.18 0 0 0 0 0.28 0 0 0 0.05 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>\")",
+      },
+      animation: {
+        "fade-in": "fadeIn .5s ease-out both",
+        "slide-up": "slideUp .45s cubic-bezier(.22,.9,.35,1) both",
+        "stamp": "stamp .45s cubic-bezier(.2,.9,.3,1.2) both",
+        "pulse-glow": "pulseGlow 2s ease-in-out infinite",
+        "flash": "flash .8s ease-out 1",
+      },
+      keyframes: {
+        fadeIn: { "0%": {opacity: 0, transform: "translateY(4px)"}, "100%": {opacity: 1, transform: "translateY(0)"} },
+        slideUp: { "0%": {opacity: 0, transform: "translateY(18px)"}, "100%": {opacity: 1, transform: "translateY(0)"} },
+        stamp: { "0%": {opacity: 0, transform: "scale(2.2) rotate(-12deg)"}, "65%": {opacity: .9, transform: "scale(.92) rotate(2deg)"}, "100%": {opacity: 1, transform: "scale(1) rotate(-4deg)"} },
+        pulseGlow: { "0%,100%": {boxShadow: "0 0 0 rgba(232,168,56,0)"}, "50%": {boxShadow: "0 0 18px rgba(232,168,56,0.55)"} },
+        flash: { "0%": {backgroundColor: "rgba(232,168,56,.35)"}, "100%": {backgroundColor: "transparent"} },
+      },
+    },
+  },
+  plugins: [],
+};

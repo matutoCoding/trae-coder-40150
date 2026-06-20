@@ -1,0 +1,176 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ===== 基础样式覆盖 ===== */
+
+/* 根元素高度占满视口 */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+/* body 全局样式 */
+body {
+  background-color: #f5f7fa; /* bg-ink-50 */
+  color: #1e2939; /* text-ink-700 */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-family: "Source Han Sans CN", "PingFang SC", "Microsoft YaHei",
+    system-ui, sans-serif;
+}
+
+/* ===== 滚动条样式 ===== */
+
+/* WebKit 内核滚动条宽度/高度 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+/* 滚动条滑块 */
+::-webkit-scrollbar-thumb {
+  background-color: rgba(145, 169, 208, 0.6); /* bg-brand-300/60 */
+  border-radius: 3px;
+}
+
+/* 滚动条滑块 hover 状态 */
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(94, 128, 182, 0.8); /* bg-brand-400/80 */
+}
+
+/* 滚动条轨道 */
+::-webkit-scrollbar-track {
+  background-color: transparent;
+}
+
+/* ===== 文本选中样式 ===== */
+
+::selection {
+  background-color: rgba(240, 190, 68, 0.4); /* bg-amber-300/40 */
+}
+
+/* ===== 工具类 ===== */
+
+/* 衬线字体加粗 */
+.font-serif-semibold {
+  font-family: "Source Han Serif CN", "Noto Serif SC", "Songti SC", Georgia,
+    serif;
+  font-weight: 600;
+}
+
+/* 数字字体：等宽 + 表格等宽数字 */
+.number {
+  font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ===== 侧边栏辅助类 ===== */
+
+/* 侧边栏导航项激活指示条动画 */
+.sidebar-indicator {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 侧边栏折叠时文字隐藏 */
+.sidebar-collapsed .nav-label {
+  display: none;
+}
+
+/* ===== 发票/账单辅助类 ===== */
+
+/* 发票打印纸张背景 */
+.invoice-paper {
+  background: linear-gradient(to bottom, #ffffff, #fafbfc);
+  box-shadow: 0 4px 20px -6px rgba(30, 58, 95, 0.15),
+    0 2px 6px -2px rgba(30, 58, 95, 0.08);
+}
+
+/* 发票虚线分割线 */
+.invoice-divider {
+  border-top: 1px dashed #cbd5e0;
+}
+
+/* 发票印章样式 */
+.invoice-stamp {
+  border: 2px solid #dc2626;
+  color: #dc2626;
+  border-radius: 50%;
+  font-weight: 700;
+  transform: rotate(-12deg);
+  opacity: 0.85;
+}
+
+/* ===== 表格辅助类 ===== */
+
+/* 表头样式 */
+.table-header {
+  background-color: #f5f7fa; /* bg-ink-50 */
+  border-bottom: 1px solid #e8edf3; /* border-ink-100 */
+}
+
+/* 表格行 hover 效果 */
+.table-row-hover {
+  transition: background-color 0.15s ease;
+}
+.table-row-hover:hover {
+  background-color: rgba(232, 238, 247, 0.5); /* bg-brand-50/50 */
+}
+
+/* 斑马纹表格 */
+.table-striped tbody tr:nth-child(even) {
+  background-color: rgba(245, 247, 250, 0.6); /* bg-ink-50/60 */
+}
+
+/* 表格单元格内容截断 */
+.table-cell-truncate {
+  max-width: 200px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ===== 卡片/面板辅助类 ===== */
+
+/* 卡片通用样式 */
+.panel-card {
+  background-color: #ffffff;
+  border-radius: 0.75rem;
+  box-shadow: 0 4px 20px -6px rgba(30, 58, 95, 0.15),
+    0 2px 6px -2px rgba(30, 58, 95, 0.08);
+  border: 1px solid rgba(232, 237, 243, 0.6);
+}
+
+/* 带边框的强调卡片 */
+.panel-card-accent {
+  border-top: 3px solid #eca926; /* amber-400 */
+}
+
+/* ===== 状态标签辅助类 ===== */
+
+/* 状态徽标通用 */
+.status-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 6px;
+}
+
+/* 状态颜色变体 */
+.status-success {
+  background-color: #2e8b57;
+}
+.status-warning {
+  background-color: #d97706;
+}
+.status-danger {
+  background-color: #dc2626;
+}
+.status-info {
+  background-color: #3a5e99; /* brand-400 */
+}
+.status-muted {
+  background-color: #9aa8ba; /* ink-300 */
+}
