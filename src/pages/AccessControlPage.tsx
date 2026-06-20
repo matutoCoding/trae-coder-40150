@@ -10,6 +10,8 @@ import {
   MapPin,
   Calendar as CalendarIcon,
   Ruler,
+  XCircle,
+  ArrowRight,
 } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -102,9 +104,17 @@ export default function AccessControlPage() {
   // 为每个仓库单元找到对应的授权记录
   const getGrantForUnit = useCallback(
     (unitId: string): AccessGrant | undefined => {
-      const grants = accessGrants.filter((g) => g.unitId === unitId && g.status !== 'expired');
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const grants = accessGrants.filter((g) =>
+        g.unitId === unitId
+        && g.status !== 'expired'
+        && new Date(g.endDate) >= today
+      );
       if (grants.length === 0) return undefined;
-      return grants[grants.length - 1];
+      return grants.sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      )[0];
     },
     [accessGrants],
   );
@@ -237,6 +247,9 @@ export default function AccessControlPage() {
   // 当前选中的租户（用于欠费警告）
   const selectedTenant = selectedTenantId ? getTenantById(selectedTenantId) : null;
   const selectedTenantHasUnpaid = selectedTenant ? hasUnpaidBills(selectedTenant.id) : false;
+
+  const dateRangeInvalid =
+    grantStartDate && grantEndDate && new Date(grantStartDate) > new Date(grantEndDate);
 
   return (
     <div className="space-y-6">
@@ -512,7 +525,8 @@ export default function AccessControlPage() {
                 !currentUnit ||
                 !selectedTenantId ||
                 !grantStartDate ||
-                !grantEndDate
+                !grantEndDate ||
+                dateRangeInvalid
               }
             >
               <UserPlus className="w-4 h-4" />
@@ -585,7 +599,10 @@ export default function AccessControlPage() {
                   type="date"
                   value={grantStartDate}
                   onChange={(e) => setGrantStartDate(e.target.value)}
-                  className="w-full h-10 px-3 text-sm rounded-md border border-ink-200 bg-white outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400"
+                  className={cn(
+                    'w-full h-10 px-3 text-sm rounded-md border bg-white outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400',
+                    dateRangeInvalid ? 'border-red-400 focus:ring-red-400 focus:border-red-400' : 'border-ink-200',
+                  )}
                 />
               </div>
               <div>
@@ -596,10 +613,25 @@ export default function AccessControlPage() {
                   type="date"
                   value={grantEndDate}
                   onChange={(e) => setGrantEndDate(e.target.value)}
-                  className="w-full h-10 px-3 text-sm rounded-md border border-ink-200 bg-white outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400"
+                  className={cn(
+                    'w-full h-10 px-3 text-sm rounded-md border bg-white outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400',
+                    dateRangeInvalid ? 'border-red-400 focus:ring-red-400 focus:border-red-400' : 'border-ink-200',
+                  )}
                 />
               </div>
             </div>
+
+            {dateRangeInvalid && (
+              <div className="flex items-start gap-2 p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm">
+                <XCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                <div>
+                  <p className="font-medium">日期范围错误</p>
+                  <p className="text-xs mt-0.5 opacity-90">
+                    开始日期不能晚于结束日期，请重新选择。
+                  </p>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </Modal>
@@ -608,56 +640,78 @@ export default function AccessControlPage() {
       <Modal
         open={detailModalOpen}
         onClose={() => setDetailModalOpen(false)}
-        maxWidth="md"
+        maxWidth="lg"
         title={
           <div className="flex items-center gap-2">
             <Eye className="w-5 h-5 text-brand-500" />
             授权详情 — {currentUnit?.code ?? ''}
+            {currentUnit && (
+              <span className="text-xs text-ink-400 font-normal">
+                {currentUnit.zone} 区 · {SIZE_BADGE_CONFIG[currentUnit.size].label}
+              </span>
+            )}
           </div>
         }
       >
         {currentUnit ? (() => {
-          const currentGrant = getGrantForUnit(currentUnit.id);
-          const historyGrants = accessGrants
-            .filter((g) => g.unitId === currentUnit.id && g.status === 'expired')
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+
+          const allGrants = accessGrants
+            .filter((g) => g.unitId === currentUnit.id)
             .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+          const currentGrant = getGrantForUnit(currentUnit.id);
+          const historyGrants = allGrants.filter(g => g.id !== currentGrant?.id);
+
+          const getSuperseder = (grant: AccessGrant) =>
+            grant.supersededByGrantId ? allGrants.find(g => g.id === grant.supersededByGrantId) : undefined;
 
           return (
             <div className="space-y-5">
-              {/* 当前有效授权 */}
+              {/* 当前授权 */}
               <div>
                 <h4 className="text-sm font-semibold text-ink-700 mb-3 flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-success" />
-                  当前授权
+                  <span className="w-2 h-2 rounded-full bg-success animate-pulse" />
+                  当前授权（{currentGrant ? '有效中' : '待授权'}）
                 </h4>
                 {currentGrant ? (() => {
                   const tenant = getTenantById(currentGrant.tenantId);
                   const displayStatus = getDisplayStatus(currentUnit, currentGrant) as AccessGrantStatus;
+                  const supersededIds = allGrants.filter(g => g.supersededByGrantId === currentGrant.id).map(g => g.id);
                   return (
-                    <div className="rounded-lg border border-brand-200 bg-brand-50/30 p-4 space-y-3">
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm text-ink-500">授权状态</span>
-                        <AccessStatusBadge status={displayStatus} />
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm text-ink-500">授权租户</span>
-                        {tenant && (
-                          <div className="flex items-center gap-2">
-                            <TenantAvatar name={tenant.name} size="xs" />
-                            <span className="font-medium text-ink-800">{tenant.name}</span>
-                          </div>
-                        )}
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm text-ink-500">授权有效期</span>
-                        <span className="font-mono text-sm text-ink-700">
-                          {currentGrant.startDate} ~ {currentGrant.endDate}
-                        </span>
+                    <div className="rounded-lg border-2 border-success/30 bg-success/5 p-4 space-y-3">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm text-ink-500">授权状态</span>
+                          <AccessStatusBadge status={displayStatus} />
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm text-ink-500">授权租户</span>
+                          {tenant && (
+                            <div className="flex items-center gap-2">
+                              <TenantAvatar name={tenant.name} size="xs" />
+                              <span className="font-medium text-ink-800">{tenant.name}</span>
+                            </div>
+                          )}
+                        </div>
+                        <div className="col-span-2 flex items-center justify-between">
+                          <span className="text-sm text-ink-500">授权有效期</span>
+                          <span className="font-mono text-sm text-ink-700">
+                            {currentGrant.startDate} ~ {currentGrant.endDate}
+                          </span>
+                        </div>
                       </div>
                       {currentGrant.status === 'frozen' && currentGrant.frozenReason && (
                         <div className="p-3 rounded bg-red-50 border border-red-100">
                           <div className="text-xs text-red-500 font-medium mb-1">冻结原因</div>
                           <div className="text-sm text-red-700">{currentGrant.frozenReason}</div>
+                        </div>
+                      )}
+                      {supersededIds.length > 0 && (
+                        <div className="p-3 rounded bg-brand-50 border border-brand-100 flex items-start gap-2 text-xs text-brand-700">
+                          <ArrowRight className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                          <span>本次授权覆盖了历史上的 <strong>{supersededIds.length}</strong> 条授权记录</span>
                         </div>
                       )}
                     </div>
@@ -669,38 +723,74 @@ export default function AccessControlPage() {
                 )}
               </div>
 
-              {/* 历史授权记录 */}
+              {/* 历史时间轴 */}
               {historyGrants.length > 0 && (
                 <div>
                   <h4 className="text-sm font-semibold text-ink-700 mb-3 flex items-center gap-2">
                     <span className="w-2 h-2 rounded-full bg-ink-400" />
-                    历史授权（{historyGrants.length}）
+                    历史授权时间轴（{historyGrants.length}）
                   </h4>
-                  <div className="space-y-2">
-                    {historyGrants.map((grant) => {
-                      const histTenant = getTenantById(grant.tenantId);
-                      return (
-                        <div
-                          key={grant.id}
-                          className="rounded-lg border border-ink-100 bg-white p-3 flex items-center justify-between gap-4"
-                        >
-                          <div className="flex items-center gap-3 min-w-0">
-                            {histTenant && <TenantAvatar name={histTenant.name} size="xs" />}
-                            <div className="min-w-0">
-                              <div className="text-sm font-medium text-ink-700 truncate">
-                                {histTenant?.name ?? '未知'}
-                              </div>
-                              <div className="text-xs text-ink-400 font-mono">
-                                {grant.startDate} ~ {grant.endDate}
+                  <div className="relative">
+                    <div className="absolute left-[19px] top-2 bottom-2 w-0.5 bg-ink-100" />
+                    <div className="space-y-3">
+                      {historyGrants.map((grant) => {
+                        const histTenant = getTenantById(grant.tenantId);
+                        const superseder = getSuperseder(grant);
+                        const supersederTenant = superseder ? getTenantById(superseder.tenantId) : null;
+                        const isExpired = grant.status === 'expired';
+                        return (
+                          <div key={grant.id} className="relative flex items-start gap-4 pl-1">
+                            <div
+                              className={cn(
+                                'relative z-10 w-[38px] h-[38px] rounded-full border-2 flex items-center justify-center shrink-0',
+                                isExpired ? 'bg-ink-100 text-ink-500 border-ink-200' : 'bg-amber-50 text-amber-600 border-amber-200',
+                              )}
+                            >
+                              {histTenant ? (
+                                <div className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold" style={{ backgroundColor: '#E3EDF7', color: '#1E3A5F' }}>
+                                  {histTenant.name.charAt(0)}
+                                </div>
+                              ) : (
+                                <UserPlus className="w-4 h-4" />
+                              )}
+                            </div>
+                            <div className="flex-1 min-w-0 panel-card p-3">
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-2">
+                                    {histTenant && <span className="font-medium text-ink-800 text-sm">{histTenant.name}</span>}
+                                    <AccessStatusBadge status={grant.status as AccessGrantStatus} />
+                                  </div>
+                                  <div className="text-xs text-ink-500 mt-1 font-mono">
+                                    {grant.startDate} ~ {grant.endDate}
+                                  </div>
+                                  {superseder && (
+                                    <div className="mt-2 flex items-center gap-1.5 text-xs text-ink-500">
+                                      <ArrowRight className="w-3 h-3" />
+                                      <span>
+                                        被 <strong className="text-ink-700">{supersederTenant?.name ?? '?'}</strong> 的授权覆盖
+                                        <span className="text-ink-400 ml-1">({superseder.createdAt.split(' ')[0]})</span>
+                                      </span>
+                                    </div>
+                                  )}
+                                  {!superseder && isExpired && new Date(grant.endDate) < today && (
+                                    <div className="mt-2 text-xs text-ink-400">
+                                      自然到期，未被后续授权覆盖
+                                    </div>
+                                  )}
+                                  {grant.frozenReason && grant.status === 'frozen' && (
+                                    <div className="mt-2 text-xs text-danger">冻结：{grant.frozenReason}</div>
+                                  )}
+                                </div>
+                                <div className="text-xs text-ink-400 font-mono whitespace-nowrap shrink-0">
+                                  {grant.createdAt.split(' ')[0]}
+                                </div>
                               </div>
                             </div>
                           </div>
-                          <div className="text-xs text-ink-400 shrink-0">
-                            {grant.createdAt.split(' ')[0]}
-                          </div>
-                        </div>
-                      );
-                    })}
+                        );
+                      })}
+                    </div>
                   </div>
                 </div>
               )}

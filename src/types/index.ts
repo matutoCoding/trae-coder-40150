@@ -37,6 +37,7 @@ export interface QuotaLedger {
   operatorName: string;
   reason: string;
   relatedTierChangeId?: string;
+  billId?: string;
   createdAt: string;
 }
 
@@ -105,6 +106,7 @@ export interface BillItem {
   id: string;
   billId: string;
   contractId: string;
+  unitId?: string;
   unitCode: string;
   days: number;
   pricingType: PricingType;
@@ -139,6 +141,7 @@ export interface AccessGrant {
   status: AccessGrantStatus;
   frozenReason?: string;
   createdAt: string;
+  supersededByGrantId?: string;
 }
 
 // 审计日志

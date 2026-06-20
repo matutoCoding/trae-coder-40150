@@ -506,6 +506,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
           id: uid('BI'),
           billId,
           contractId: contract.id,
+          unitId: unit.id,
           unitCode: unit.code,
           days,
           pricingType: calc.pricingType,
@@ -760,11 +761,19 @@ export const useAppStore = create<AppStore>((set, get) => ({
     };
     const saved = insert<AccessGrant>(COLLECTION_KEYS.accessGrants, grant);
 
+    for (const oldId of expiredGrants.map(g => g.id)) {
+      update<AccessGrant>(COLLECTION_KEYS.accessGrants, oldId, {
+        supersededByGrantId: saved.id,
+      });
+    }
+
     let newGrants: AccessGrant[];
     if (expiredGrants.length > 0) {
       const expiredIds = new Set(expiredGrants.map(g => g.id));
       newGrants = [
-        ...store.accessGrants.map(g => expiredIds.has(g.id) ? expiredGrants.find(e => e.id === g.id)! : g),
+        ...store.accessGrants.map(g => expiredIds.has(g.id)
+          ? { ...g, status: 'expired' as const, frozenReason: undefined, supersededByGrantId: saved.id }
+          : g),
         saved,
       ];
     } else {

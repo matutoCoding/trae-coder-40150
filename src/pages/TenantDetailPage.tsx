@@ -18,6 +18,7 @@ import {
   Check,
   Eye,
   ChevronRight,
+  ChevronDown,
   GitMerge,
   TrendingDown,
   CreditCard,
@@ -445,6 +446,7 @@ export default function TenantDetailPage() {
             bills={tenantBills}
             tiers={tiers}
             storageUnits={storageUnits}
+            contracts={tenantContracts}
           />
         )}
       </div>
@@ -1496,6 +1498,9 @@ interface TimelineEvent {
   detail: string;
   icon: React.ReactNode;
   colorClass: string;
+  unitIds: string[];
+  periodStart?: string;
+  periodEnd?: string;
 }
 
 const EVENT_TYPE_STYLES: Record<TimelineEventType, { icon: React.ReactNode; colorClass: string }> = {
@@ -1525,6 +1530,7 @@ interface MergedTimelineTabProps {
   bills: Bill[];
   tiers: TenantTier[];
   storageUnits: StorageUnit[];
+  contracts: RentalContract[];
 }
 
 function MergedTimelineTab({
@@ -1535,8 +1541,25 @@ function MergedTimelineTab({
   bills,
   tiers,
   storageUnits,
+  contracts,
 }: MergedTimelineTabProps) {
   const [filterType, setFilterType] = useState<TimelineEventType | 'all'>('all');
+  const [filterUnitId, setFilterUnitId] = useState<string | 'all'>('all');
+  const [filterPeriod, setFilterPeriod] = useState<string | 'all'>('all');
+
+  const availableUnits = useMemo(() => {
+    const unitSet = new Set<string>();
+    for (const g of accessGrants) unitSet.add(g.unitId);
+    for (const c of contracts) unitSet.add(c.unitId);
+    return storageUnits.filter(u => unitSet.has(u.id))
+      .sort((a, b) => a.code.localeCompare(b.code));
+  }, [accessGrants, contracts, storageUnits]);
+
+  const availablePeriods = useMemo(() => {
+    const periodSet = new Set<string>();
+    for (const bill of bills) periodSet.add(bill.periodStart.slice(0, 7));
+    return Array.from(periodSet).sort().reverse();
+  }, [bills]);
 
   const allEvents = useMemo(() => {
     const events: TimelineEvent[] = [];
@@ -1552,19 +1575,34 @@ function MergedTimelineTab({
         detail: `额度 ${rec.quotaBefore} → ${rec.quotaAfter}（${rec.carryStrategy === 'ratio' ? '按比例结转' : '清零策略'}）${rec.reason ? `，原因：${rec.reason}` : ''}`,
         icon: EVENT_TYPE_STYLES.tier_change.icon,
         colorClass: EVENT_TYPE_STYLES.tier_change.colorClass,
+        unitIds: [],
       });
     }
 
     for (const ledger of quotaLedgers) {
       const cfg = QUOTA_TYPE_CONFIG[ledger.type];
+      const relatedBill = bills.find(b => ledger.billId === b.id);
+      const relatedUnitIds: string[] = [];
+      let periodStart: string | undefined;
+      let periodEnd: string | undefined;
+      if (relatedBill) {
+        periodStart = relatedBill.periodStart;
+        periodEnd = relatedBill.periodEnd;
+        for (const item of relatedBill.items) {
+          if (item.unitId) relatedUnitIds.push(item.unitId);
+        }
+      }
       events.push({
         id: ledger.id,
         type: 'quota',
         time: ledger.createdAt,
         title: `额度${cfg.label}：${ledger.delta > 0 ? '+' : ''}${ledger.delta}`,
-        detail: `余额 ${ledger.balanceAfter}，${ledger.reason}`,
+        detail: `余额 ${ledger.balanceAfter}，${ledger.reason}${relatedBill ? `（关联账单 ${relatedBill.billNo}）` : ''}`,
         icon: EVENT_TYPE_STYLES.quota.icon,
         colorClass: EVENT_TYPE_STYLES.quota.colorClass,
+        unitIds: relatedUnitIds,
+        periodStart,
+        periodEnd,
       });
     }
 
@@ -1579,10 +1617,15 @@ function MergedTimelineTab({
         detail: `${grant.startDate} ~ ${grant.endDate}${grant.frozenReason ? `，冻结原因：${grant.frozenReason}` : ''}`,
         icon: EVENT_TYPE_STYLES.access.icon,
         colorClass: EVENT_TYPE_STYLES.access.colorClass,
+        unitIds: [grant.unitId],
+        periodStart: grant.startDate,
+        periodEnd: grant.endDate,
       });
     }
 
     for (const bill of bills) {
+      const unitIds: string[] = [];
+      for (const item of bill.items) if (item.unitId) unitIds.push(item.unitId);
       events.push({
         id: bill.id,
         type: 'bill',
@@ -1591,52 +1634,129 @@ function MergedTimelineTab({
         detail: `账期 ${formatDate(bill.periodStart)} ~ ${formatDate(bill.periodEnd)}，金额 ¥${bill.totalAmount.toFixed(2)}，${bill.status === 'paid' ? '已支付' : '待支付'}`,
         icon: EVENT_TYPE_STYLES.bill.icon,
         colorClass: EVENT_TYPE_STYLES.bill.colorClass,
+        unitIds,
+        periodStart: bill.periodStart,
+        periodEnd: bill.periodEnd,
       });
     }
 
     return events.sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
   }, [tenantId, tierChangeRecords, quotaLedgers, accessGrants, bills, tiers, storageUnits]);
 
-  const filteredEvents = filterType === 'all'
-    ? allEvents
-    : allEvents.filter(e => e.type === filterType);
+  const filteredEvents = useMemo(() => {
+    return allEvents.filter(e => {
+      if (filterType !== 'all' && e.type !== filterType) return false;
+      if (filterUnitId !== 'all') {
+        const hasUnit = e.unitIds.includes(filterUnitId)
+          || (e.type === 'tier_change');
+        if (!hasUnit) return false;
+      }
+      if (filterPeriod !== 'all') {
+        if (e.periodStart && e.periodEnd) {
+          const eventStartYM = e.periodStart.slice(0, 7);
+          const eventEndYM = e.periodEnd.slice(0, 7);
+          const inRange = filterPeriod >= eventStartYM && filterPeriod <= eventEndYM;
+          if (!inRange && e.type !== 'tier_change') return false;
+        } else if (e.type !== 'tier_change') {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [allEvents, filterType, filterUnitId, filterPeriod]);
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-2 flex-wrap">
-        <span className="text-sm text-ink-500">筛选：</span>
-        {([
-          { value: 'all', label: '全部' },
-          { value: 'tier_change', label: '升降级' },
-          { value: 'quota', label: '额度变动' },
-          { value: 'access', label: '门禁授权' },
-          { value: 'bill', label: '账单' },
-        ] as const).map(opt => (
-          <button
-            key={opt.value}
-            type="button"
-            onClick={() => setFilterType(opt.value)}
-            className={cn(
-              'px-3 h-7 rounded-md text-xs font-medium border transition-colors',
-              filterType === opt.value
-                ? 'bg-brand-500 text-white border-brand-500'
-                : 'bg-white text-ink-500 border-ink-200 hover:border-brand-300',
-            )}
-          >
-            {opt.label}
-          </button>
-        ))}
-        <span className="ml-auto text-xs text-ink-400">
-          共 {filteredEvents.length} 条记录
-        </span>
+      {/* 筛选条件 */}
+      <div className="space-y-2.5">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-sm text-ink-500 shrink-0">事件类型：</span>
+          {([
+            { value: 'all', label: '全部' },
+            { value: 'tier_change', label: '升降级' },
+            { value: 'quota', label: '额度变动' },
+            { value: 'access', label: '门禁授权' },
+            { value: 'bill', label: '账单' },
+          ] as const).map(opt => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => setFilterType(opt.value)}
+              className={cn(
+                'px-3 h-7 rounded-md text-xs font-medium border transition-colors',
+                filterType === opt.value
+                  ? 'bg-brand-500 text-white border-brand-500'
+                  : 'bg-white text-ink-500 border-ink-200 hover:border-brand-300',
+              )}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-sm text-ink-500 shrink-0">关联仓号：</span>
+          <div className="relative">
+            <select
+              value={filterUnitId}
+              onChange={e => setFilterUnitId(e.target.value)}
+              className="h-7 pl-2 pr-7 text-xs rounded-md border border-ink-200 bg-white outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400 appearance-none cursor-pointer"
+            >
+              <option value="all">全部仓号</option>
+              {availableUnits.map(u => (
+                <option key={u.id} value={u.id}>{u.code}（{u.zone}区）</option>
+              ))}
+            </select>
+            <ChevronDown className="w-3 h-3 text-ink-400 absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+          </div>
+          <span className="text-sm text-ink-500 shrink-0 ml-2">关联账期：</span>
+          <div className="relative">
+            <select
+              value={filterPeriod}
+              onChange={e => setFilterPeriod(e.target.value)}
+              className="h-7 pl-2 pr-7 text-xs rounded-md border border-ink-200 bg-white outline-none focus:ring-1 focus:ring-brand-400 focus:border-brand-400 appearance-none cursor-pointer"
+            >
+              <option value="all">全部账期</option>
+              {availablePeriods.map(ym => (
+                <option key={ym} value={ym}>{ym.replace('-', '年')}月</option>
+              ))}
+            </select>
+            <ChevronDown className="w-3 h-3 text-ink-400 absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+          </div>
+          {(filterUnitId !== 'all' || filterPeriod !== 'all') && (
+            <button
+              type="button"
+              onClick={() => {
+                setFilterUnitId('all');
+                setFilterPeriod('all');
+                setFilterType('all');
+              }}
+              className="ml-auto text-xs text-ink-400 hover:text-brand-600 underline-offset-2 hover:underline"
+            >
+              清除筛选
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="text-xs text-ink-400">
+        共 {filteredEvents.length} 条记录
+        {(filterUnitId !== 'all' || filterPeriod !== 'all' || filterType !== 'all') && (
+          <span className="text-ink-300 mx-1">·</span>
+        )}
+        {filterUnitId !== 'all' && (
+          <span>仓号：<strong className="text-brand-600">{availableUnits.find(u => u.id === filterUnitId)?.code}</strong></span>
+        )}
+        {filterPeriod !== 'all' && (
+          <span>{filterUnitId !== 'all' && ' · '}账期：<strong className="text-brand-600">{filterPeriod.replace('-', '年')}月</strong></span>
+        )}
       </div>
 
       {filteredEvents.length === 0 ? (
         <div className="panel-card p-8">
           <EmptyState
             icon={GitMerge}
-            title="暂无合并时间线记录"
-            description="该租户还没有产生升降级、额度、门禁或账单相关记录。"
+            title="暂无匹配的时间线记录"
+            description="请尝试调整筛选条件。"
             size="sm"
           />
         </div>
@@ -1656,9 +1776,30 @@ function MergedTimelineTab({
                 </div>
                 <div className="flex-1 min-w-0 panel-card p-4">
                   <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <div className="text-sm font-medium text-ink-800">{event.title}</div>
                       <div className="text-xs text-ink-500 mt-1 leading-relaxed">{event.detail}</div>
+                      {event.unitIds.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-2">
+                          {event.unitIds.map(uid => {
+                            const unit = storageUnits.find(u => u.id === uid);
+                            if (!unit) return null;
+                            return (
+                              <span
+                                key={uid}
+                                className={cn(
+                                  'inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border',
+                                  filterUnitId === uid
+                                    ? 'bg-brand-500 text-white border-brand-500'
+                                    : 'bg-brand-50 text-brand-700 border-brand-200',
+                                )}
+                              >
+                                {unit.code}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                     <div className="text-xs text-ink-400 font-mono tabular-nums whitespace-nowrap shrink-0">
                       {formatDateTime(event.time)}

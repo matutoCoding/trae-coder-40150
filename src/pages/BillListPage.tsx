@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { FileSpreadsheet, Plus, Search, Eye, CheckCircle2, ChevronDown, CheckSquare, Loader2, AlertTriangle, Eye as PreviewIcon } from 'lucide-react';
+import { FileSpreadsheet, Plus, Search, Eye, CheckCircle2, ChevronDown, CheckSquare, Loader2, AlertTriangle, Eye as PreviewIcon, XCircle, Calendar, List as ListIcon, Receipt, DollarSign, ShieldAlert, TrendingDown } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Card, CardContent } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -33,7 +33,8 @@ const STATUS_OPTIONS: { value: BillStatus | 'all'; label: string }[] = [
 ];
 
 export default function BillListPage() {
-  const { bills, tenants, generateBills, previewBills, markBillPaid } = useAppStore();
+  const { bills, tenants, accessGrants, generateBills, previewBills, markBillPaid } = useAppStore();
+  const [viewMode, setViewMode] = useState<'list' | 'reconciliation'>('list');
   const [selectedPeriod, setSelectedPeriod] = useState('all');
   const [selectedStatus, setSelectedStatus] = useState<BillStatus | 'all'>('all');
   const [searchKeyword, setSearchKeyword] = useState('');
@@ -52,6 +53,20 @@ export default function BillListPage() {
   } | null>(null);
   const [previewResult, setPreviewResult] = useState<BillPreviewResult | null>(null);
   const [previewStep, setPreviewStep] = useState<'form' | 'preview' | 'result'>('form');
+  const [detailTenantId, setDetailTenantId] = useState<string | null>(null);
+  const [detailPeriod, setDetailPeriod] = useState<string | null>(null);
+
+  const dateRangeInvalid =
+    periodStart && periodEnd && new Date(periodStart) > new Date(periodEnd);
+  const dateRangeDays = useMemo(() => {
+    if (!periodStart || !periodEnd || dateRangeInvalid) return 0;
+    return (
+      Math.round(
+        (new Date(periodEnd).getTime() - new Date(periodStart).getTime()) /
+          (1000 * 60 * 60 * 24)
+      ) + 1
+    );
+  }, [periodStart, periodEnd, dateRangeInvalid]);
 
   // 筛选后的账单列表
   const filteredBills = useMemo(() => {
@@ -377,6 +392,81 @@ export default function BillListPage() {
     },
   ];
 
+  // ========== 对账视图数据计算 ==========
+
+  interface ReconciliationRow {
+    period: string;
+    tenantId: string;
+    tenantName: string;
+    totalReceivable: number;
+    totalPaid: number;
+    totalUnpaid: number;
+    billCount: number;
+    unpaidBillCount: number;
+    frozenAccessCount: number;
+    bills: Bill[];
+  }
+
+  const reconciliationRows = useMemo(() => {
+    const rowsMap = new Map<string, ReconciliationRow>();
+    const scopeBills = selectedPeriod !== 'all'
+      ? bills.filter(b => b.periodStart.slice(0, 7) === selectedPeriod)
+      : bills;
+
+    for (const bill of scopeBills) {
+      const period = bill.periodStart.slice(0, 7);
+      const key = `${period}-${bill.tenantId}`;
+      const tenant = tenants.find(t => t.id === bill.tenantId);
+      if (!tenant) continue;
+
+      const unpaid = Math.max(0, bill.totalAmount - bill.paidAmount);
+      const row = rowsMap.get(key) ?? {
+        period,
+        tenantId: bill.tenantId,
+        tenantName: tenant.name,
+        totalReceivable: 0,
+        totalPaid: 0,
+        totalUnpaid: 0,
+        billCount: 0,
+        unpaidBillCount: 0,
+        frozenAccessCount: accessGrants.filter(
+          g => g.tenantId === bill.tenantId && g.status === 'frozen'
+        ).length,
+        bills: [],
+      };
+      row.totalReceivable += bill.totalAmount;
+      row.totalPaid += bill.paidAmount;
+      row.totalUnpaid += unpaid;
+      row.billCount += 1;
+      if (unpaid > 0) row.unpaidBillCount += 1;
+      row.bills.push(bill);
+      rowsMap.set(key, row);
+    }
+
+    const rows = Array.from(rowsMap.values()).sort((a, b) => {
+      if (a.period !== b.period) return b.period.localeCompare(a.period);
+      return b.totalUnpaid - a.totalUnpaid;
+    });
+
+    if (searchKeyword.trim()) {
+      const kw = searchKeyword.trim().toLowerCase();
+      return rows.filter(r =>
+        r.tenantName.toLowerCase().includes(kw)
+      );
+    }
+    return rows;
+  }, [bills, tenants, accessGrants, selectedPeriod, searchKeyword]);
+
+  const reconciliationSummary = useMemo(() => {
+    return reconciliationRows.reduce((acc, r) => {
+      acc.totalReceivable += r.totalReceivable;
+      acc.totalPaid += r.totalPaid;
+      acc.totalUnpaid += r.totalUnpaid;
+      acc.tenantWithDebt += r.totalUnpaid > 0 ? 1 : 0;
+      return acc;
+    }, { totalReceivable: 0, totalPaid: 0, totalUnpaid: 0, tenantWithDebt: 0 });
+  }, [reconciliationRows]);
+
   return (
     <div className="space-y-6">
       {/* 页面标题区 + 右上角操作按钮 */}
@@ -420,6 +510,33 @@ export default function BillListPage() {
         </div>
       )}
 
+      {/* 视图切换条 */}
+      <div className="flex items-center gap-2 bg-ink-50 rounded-lg border border-ink-200 p-1 w-fit">
+        {[
+          { value: 'list', label: '账单列表', icon: ListIcon },
+          { value: 'reconciliation', label: '收款对账', icon: Receipt },
+        ].map(opt => {
+          const isActive = viewMode === opt.value;
+          const Icon = opt.icon;
+          return (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => setViewMode(opt.value as 'list' | 'reconciliation')}
+              className={cn(
+                'flex items-center gap-1.5 h-9 px-4 rounded-md text-sm font-medium transition-colors',
+                isActive
+                  ? 'bg-white text-brand-700 shadow-sm border border-ink-200'
+                  : 'text-ink-500 hover:text-ink-700',
+              )}
+            >
+              <Icon className="w-4 h-4" />
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
+
       {/* 筛选栏 */}
       <Card>
         <CardContent className="p-4">
@@ -443,24 +560,25 @@ export default function BillListPage() {
               </div>
             </div>
 
-            {/* 状态筛选 */}
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-ink-600 whitespace-nowrap">状态：</span>
-              <div className="relative">
-                <select
-                  value={selectedStatus}
-                  onChange={(e) => setSelectedStatus(e.target.value as BillStatus | 'all')}
-                  className="h-9 pl-3 pr-8 text-sm rounded-md border border-ink-200 bg-white outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400 appearance-none cursor-pointer"
-                >
-                  {STATUS_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown className="w-4 h-4 text-ink-400 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+            {viewMode === 'list' && (
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-ink-600 whitespace-nowrap">状态：</span>
+                <div className="relative">
+                  <select
+                    value={selectedStatus}
+                    onChange={(e) => setSelectedStatus(e.target.value as BillStatus | 'all')}
+                    className="h-9 pl-3 pr-8 text-sm rounded-md border border-ink-200 bg-white outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400 appearance-none cursor-pointer"
+                  >
+                    {STATUS_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="w-4 h-4 text-ink-400 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                </div>
               </div>
-            </div>
+            )}
 
             {/* 租户搜索 */}
             <div className="flex-1 min-w-[240px] max-w-md">
@@ -478,18 +596,69 @@ export default function BillListPage() {
 
             {/* 统计信息 */}
             <div className="ml-auto text-sm text-ink-500">
-              共 <strong className="text-ink-700 font-mono">{filteredBills.length}</strong> 条记录
+              共 <strong className="text-ink-700 font-mono">{
+                viewMode === 'list' ? filteredBills.length : reconciliationRows.length
+              }</strong> 条记录
             </div>
           </div>
         </CardContent>
       </Card>
 
-      {/* 账单表格 */}
-      <DataTable
-        columns={columns}
-        data={filteredBills}
-        rowKey="id"
-        emptyText="暂无账单记录"
+      {viewMode === 'list' ? (
+        <>
+          {/* 批量操作提示条 */}
+          {selectedIds.size > 0 && (
+            <div className="panel-card panel-card-accent p-4 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <CheckSquare className="w-5 h-5 text-brand-500" />
+                <span className="text-sm text-ink-700">
+                  已选择 <strong className="text-brand-700">{selectedIds.size}</strong> 张账单
+                </span>
+              </div>
+              <Button variant="primary" size="sm" onClick={() => setBatchConfirmOpen(true)}>
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                批量标记已支付
+              </Button>
+            </div>
+          )}
+
+          {/* 账单表格 */}
+          <DataTable
+            columns={columns}
+            data={filteredBills}
+            rowKey="id"
+            emptyText="暂无账单记录"
+          />
+        </>
+      ) : (
+        <ReconciliationView
+          rows={reconciliationRows}
+          summary={reconciliationSummary}
+          onOpenDetail={(tid, period) => {
+            setDetailTenantId(tid);
+            setDetailPeriod(period);
+          }}
+          onPayBill={(billId) => {
+            setCurrentPayBillId(billId);
+            setConfirmPaidOpen(true);
+          }}
+        />
+      )}
+
+      {/* 对账详情 Modal */}
+      <ReconciliationDetailModal
+        open={detailTenantId !== null}
+        onClose={() => {
+          setDetailTenantId(null);
+          setDetailPeriod(null);
+        }}
+        tenantId={detailTenantId ?? ''}
+        period={detailPeriod ?? ''}
+        bills={bills}
+        onPayBill={(billId) => {
+          setCurrentPayBillId(billId);
+          setConfirmPaidOpen(true);
+        }}
       />
 
       {/* 单个标记已支付确认弹窗 */}
@@ -557,7 +726,7 @@ export default function BillListPage() {
                 variant="primary"
                 size="md"
                 onClick={handlePreviewBills}
-                disabled={!periodStart || !periodEnd}
+                disabled={!periodStart || !periodEnd || dateRangeInvalid}
               >
                 <PreviewIcon className="w-4 h-4" />
                 预览账单
@@ -602,7 +771,10 @@ export default function BillListPage() {
                 type="date"
                 value={periodStart}
                 onChange={(e) => setPeriodStart(e.target.value)}
-                className="w-full h-10 px-3 text-sm rounded-md border border-ink-200 bg-white outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400"
+                className={cn(
+                  'w-full h-10 px-3 text-sm rounded-md border bg-white outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400',
+                  dateRangeInvalid ? 'border-red-400 focus:ring-red-400 focus:border-red-400' : 'border-ink-200',
+                )}
               />
             </div>
 
@@ -614,9 +786,34 @@ export default function BillListPage() {
                 type="date"
                 value={periodEnd}
                 onChange={(e) => setPeriodEnd(e.target.value)}
-                className="w-full h-10 px-3 text-sm rounded-md border border-ink-200 bg-white outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400"
+                className={cn(
+                  'w-full h-10 px-3 text-sm rounded-md border bg-white outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400',
+                  dateRangeInvalid ? 'border-red-400 focus:ring-red-400 focus:border-red-400' : 'border-ink-200',
+                )}
               />
             </div>
+
+            {dateRangeInvalid ? (
+              <div className="flex items-start gap-2 p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm">
+                <XCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                <div>
+                  <p className="font-medium">日期范围错误</p>
+                  <p className="text-xs mt-0.5 opacity-90">
+                    开始日期不能晚于结束日期，请重新选择账期。
+                  </p>
+                </div>
+              </div>
+            ) : dateRangeDays > 0 ? (
+              <div className="flex items-start gap-2 p-3 rounded-lg bg-brand-50 border border-brand-200 text-brand-700 text-sm">
+                <Calendar className="w-4 h-4 mt-0.5 shrink-0" />
+                <div>
+                  <p className="font-medium">账期共 {dateRangeDays} 天</p>
+                  <p className="text-xs mt-0.5 opacity-90">
+                    包含起止日期，按自然日 {dateRangeDays === 1 ? '单日账期按 1 天计费' : `(${periodStart} ~ ${periodEnd})`}
+                  </p>
+                </div>
+              </div>
+            ) : null}
 
             <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 text-sm">
               <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
@@ -772,6 +969,319 @@ export default function BillListPage() {
         )}
       </Modal>
     </div>
+  );
+}
+
+// ==================== 对账视图 ====================
+interface ReconciliationRowData {
+  period: string;
+  tenantId: string;
+  tenantName: string;
+  totalReceivable: number;
+  totalPaid: number;
+  totalUnpaid: number;
+  billCount: number;
+  unpaidBillCount: number;
+  frozenAccessCount: number;
+  bills: Bill[];
+}
+
+interface ReconciliationSummary {
+  totalReceivable: number;
+  totalPaid: number;
+  totalUnpaid: number;
+  tenantWithDebt: number;
+}
+
+interface ReconciliationViewProps {
+  rows: ReconciliationRowData[];
+  summary: ReconciliationSummary;
+  onOpenDetail: (tenantId: string, period: string) => void;
+  onPayBill: (billId: string) => void;
+}
+
+function ReconciliationView({ rows, summary, onOpenDetail }: ReconciliationViewProps) {
+  return (
+    <div className="space-y-4">
+      {/* 顶部汇总卡片 */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="panel-card p-4 border-l-4 border-l-brand-500">
+          <div className="flex items-center gap-2 text-xs text-ink-500 mb-1">
+            <Receipt className="w-3.5 h-3.5" />
+            应收金额
+          </div>
+          <div className="text-2xl font-serif font-bold text-ink-800 font-mono tabular-nums">
+            ¥{summary.totalReceivable.toFixed(2)}
+          </div>
+        </div>
+        <div className="panel-card p-4 border-l-4 border-l-success">
+          <div className="flex items-center gap-2 text-xs text-ink-500 mb-1">
+            <DollarSign className="w-3.5 h-3.5" />
+            已收金额
+          </div>
+          <div className="text-2xl font-serif font-bold text-success font-mono tabular-nums">
+            ¥{summary.totalPaid.toFixed(2)}
+          </div>
+        </div>
+        <div className="panel-card p-4 border-l-4 border-l-danger">
+          <div className="flex items-center gap-2 text-xs text-ink-500 mb-1">
+            <TrendingDown className="w-3.5 h-3.5" />
+            欠费总额
+          </div>
+          <div className="text-2xl font-serif font-bold text-danger font-mono tabular-nums">
+            ¥{summary.totalUnpaid.toFixed(2)}
+          </div>
+        </div>
+        <div className="panel-card p-4 border-l-4 border-l-amber-500">
+          <div className="flex items-center gap-2 text-xs text-ink-500 mb-1">
+            <ShieldAlert className="w-3.5 h-3.5" />
+            欠费租户
+          </div>
+          <div className="text-2xl font-serif font-bold text-ink-800 font-mono tabular-nums">
+            {summary.tenantWithDebt}
+            <span className="text-sm font-normal text-ink-500 ml-1">人</span>
+          </div>
+        </div>
+      </div>
+
+      {/* 对账明细表格 */}
+      <div className="panel-card overflow-hidden">
+        {rows.length === 0 ? (
+          <div className="py-16 text-center text-ink-400 text-sm">暂无对账数据</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-ink-50 border-b border-ink-100">
+                  <th className="text-left px-4 py-3 text-ink-600 font-medium whitespace-nowrap">账期</th>
+                  <th className="text-left px-4 py-3 text-ink-600 font-medium whitespace-nowrap">租户</th>
+                  <th className="text-right px-4 py-3 text-ink-600 font-medium whitespace-nowrap">应收</th>
+                  <th className="text-right px-4 py-3 text-ink-600 font-medium whitespace-nowrap">已收</th>
+                  <th className="text-right px-4 py-3 text-ink-600 font-medium whitespace-nowrap">欠费</th>
+                  <th className="text-center px-4 py-3 text-ink-600 font-medium whitespace-nowrap">账单数</th>
+                  <th className="text-center px-4 py-3 text-ink-600 font-medium whitespace-nowrap">冻结门禁</th>
+                  <th className="text-right px-4 py-3 text-ink-600 font-medium whitespace-nowrap">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row, idx) => (
+                  <tr
+                    key={`${row.period}-${row.tenantId}`}
+                    className={cn(
+                      'border-b border-ink-50',
+                      idx % 2 === 0 ? 'bg-white' : 'bg-ink-25',
+                      row.totalUnpaid > 0 && 'bg-red-50/40',
+                    )}
+                  >
+                    <td className="px-4 py-3 font-mono text-ink-700">{row.period}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        <TenantAvatar name={row.tenantName} size="xs" />
+                        <span className="font-medium text-ink-800">{row.tenantName}</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-700">¥{row.totalReceivable.toFixed(2)}</td>
+                    <td className="px-4 py-3 text-right font-mono tabular-nums text-success">¥{row.totalPaid.toFixed(2)}</td>
+                    <td className={cn(
+                      'px-4 py-3 text-right font-mono tabular-nums font-semibold',
+                      row.totalUnpaid > 0 ? 'text-danger' : 'text-ink-400',
+                    )}>
+                      ¥{row.totalUnpaid.toFixed(2)}
+                    </td>
+                    <td className="px-4 py-3 text-center font-mono tabular-nums">
+                      {row.billCount}
+                      {row.unpaidBillCount > 0 && (
+                        <span className="text-danger text-xs ml-1">({row.unpaidBillCount}未付)</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-center font-mono tabular-nums">
+                      {row.frozenAccessCount > 0 ? (
+                        <span className="inline-flex items-center gap-1 text-danger font-medium">
+                          <ShieldAlert className="w-3.5 h-3.5" />
+                          {row.frozenAccessCount}
+                        </span>
+                      ) : (
+                        <span className="text-ink-400">0</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => onOpenDetail(row.tenantId, row.period)}
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                        查看明细
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ==================== 对账详情 Modal ====================
+interface ReconciliationDetailModalProps {
+  open: boolean;
+  onClose: () => void;
+  tenantId: string;
+  period: string;
+  bills: Bill[];
+  onPayBill: (billId: string) => void;
+}
+
+function ReconciliationDetailModal({
+  open,
+  onClose,
+  tenantId,
+  period,
+  bills,
+  onPayBill,
+}: ReconciliationDetailModalProps) {
+  const { tenants } = useAppStore();
+
+  const tenant = tenants.find(t => t.id === tenantId);
+  const tenantBills = useMemo(() => {
+    return bills.filter(b => b.tenantId === tenantId && b.periodStart.slice(0, 7) === period)
+      .sort((a, b) => new Date(b.issuedAt).getTime() - new Date(a.issuedAt).getTime());
+  }, [bills, tenantId, period]);
+
+  const summary = useMemo(() => {
+    return tenantBills.reduce((acc, b) => {
+      acc.receivable += b.totalAmount;
+      acc.paid += b.paidAmount;
+      acc.unpaid += Math.max(0, b.totalAmount - b.paidAmount);
+      return acc;
+    }, { receivable: 0, paid: 0, unpaid: 0 });
+  }, [tenantBills]);
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      maxWidth="lg"
+      title={
+        <div className="flex items-center gap-2">
+          <Receipt className="w-5 h-5 text-brand-500" />
+          对账明细
+          {tenant && <span className="text-ink-500">— {tenant.name} ({period})
+            </span>
+          }
+        </div>
+      }
+      footer={
+        <Button variant="ghost" size="md" onClick={onClose}>
+          关闭
+        </Button>
+      }
+    >
+      <div className="space-y-4">
+        {/* 汇总 */}
+        <div className="grid grid-cols-3 gap-3">
+          <div className="p-3 rounded-lg bg-brand-50 border border-brand-100 text-center">
+            <div className="text-xs text-ink-500">应收</div>
+            <div className="text-xl font-serif font-bold text-brand-700 font-mono tabular-nums mt-0.5">¥{summary.receivable.toFixed(2)}</div>
+          </div>
+          <div className="p-3 rounded-lg bg-green-50 border border-green-200 text-center">
+            <div className="text-xs text-ink-500">已收</div>
+            <div className="text-xl font-serif font-bold text-success font-mono tabular-nums mt-0.5">¥{summary.paid.toFixed(2)}</div>
+          </div>
+          <div className="p-3 rounded-lg bg-red-50 border border-red-100 text-center">
+            <div className="text-xs text-ink-500">欠费</div>
+            <div className="text-xl font-serif font-bold text-danger font-mono tabular-nums mt-0.5">¥{summary.unpaid.toFixed(2)}</div>
+          </div>
+        </div>
+
+        {/* 账单列表 */}
+        {tenantBills.length === 0 ? (
+          <div className="py-10 text-center text-ink-400 text-sm">该账期无账单</div>
+        ) : (
+          <div className="border border-ink-100 rounded-lg overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-ink-50 border-b border-ink-100">
+                  <th className="text-left px-3 py-2.5 text-ink-600 font-medium">账单编号</th>
+                  <th className="text-left px-3 py-2.5 text-ink-600 font-medium">账期</th>
+                  <th className="text-right px-3 py-2.5 text-ink-600 font-medium">应收</th>
+                  <th className="text-right px-3 py-2.5 text-ink-600 font-medium">已收</th>
+                  <th className="text-right px-3 py-2.5 text-ink-600 font-medium">欠费</th>
+                  <th className="text-center px-3 py-2.5 text-ink-600 font-medium">状态</th>
+                  <th className="text-right px-3 py-2.5 text-ink-600 font-medium">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tenantBills.map(bill => {
+                  const unpaid = Math.max(0, bill.totalAmount - bill.paidAmount);
+                  return (
+                    <tr key={bill.id} className="border-b border-ink-50">
+                      <td className="px-3 py-2.5 font-mono text-brand-600">{bill.billNo}</td>
+                      <td className="px-3 py-2.5 text-ink-600 font-mono text-xs">
+                        {bill.periodStart} ~ {bill.periodEnd}
+                      </td>
+                      <td className="px-3 py-2.5 text-right font-mono tabular-nums text-ink-700">¥{bill.totalAmount.toFixed(2)}</td>
+                      <td className="px-3 py-2.5 text-right font-mono tabular-nums text-success">¥{bill.paidAmount.toFixed(2)}</td>
+                      <td className={cn(
+                        'px-3 py-2.5 text-right font-mono tabular-nums font-semibold',
+                        unpaid > 0 ? 'text-danger' : 'text-ink-400',
+                      )}>
+                        ¥{unpaid.toFixed(2)}
+                      </td>
+                      <td className="px-3 py-2.5 text-center">
+                        <BillStatusBadge status={bill.status} />
+                      </td>
+                      <td className="px-3 py-2.5 text-right">
+                        {unpaid > 0 ? (
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => onPayBill(bill.id)}
+                          >
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            标记已支付
+                          </Button>
+                        ) : (
+                          <Link
+                            to={`/bills/${bill.id}`}
+                            className="inline-flex items-center gap-1 text-xs text-ink-500 hover:text-brand-600"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                            查看
+                          </Link>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* 欠费来源说明 */}
+        {tenantBills.some(b => b.status === 'pending' || b.status === 'overdue') && (
+          <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 text-sm flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+            <div>
+              <p className="font-medium text-xs">欠费来源</p>
+              <ul className="text-xs mt-1 space-y-0.5 list-disc list-inside opacity-90">
+                {tenantBills
+                  .filter(b => b.status === 'pending' || b.status === 'overdue')
+                .map(b => (
+                  <li key={b.id}>
+                  {b.billNo} — ¥{Math.max(0, b.totalAmount - b.paidAmount).toFixed(2)} 未支付
+                </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
+      </div>
+    </Modal>
   );
 }
 
