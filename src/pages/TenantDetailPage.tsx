@@ -18,6 +18,10 @@ import {
   Check,
   Eye,
   ChevronRight,
+  GitMerge,
+  TrendingDown,
+  CreditCard,
+  ShieldCheck,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAppStore } from '@/store/useAppStore';
@@ -29,6 +33,7 @@ import type {
   QuotaLedger,
   StorageUnit,
   TenantTier,
+  TierChangeRecord,
 } from '@/types';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
@@ -79,6 +84,7 @@ const TABS = [
   { id: 'bills', label: '账单历史', icon: FileText },
   { id: 'changes', label: '变更轨迹', icon: History },
   { id: 'quota', label: '额度流水', icon: TrendingUp },
+  { id: 'timeline', label: '综合时间线', icon: GitMerge },
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];
@@ -137,6 +143,7 @@ export default function TenantDetailPage() {
     accessGrants,
     bills,
     quotaLedgers,
+    tierChangeRecords,
     initData,
     getTenantById,
     changeTenantTier,
@@ -429,6 +436,17 @@ export default function TenantDetailPage() {
           </div>
         )}
         {activeTab === 'quota' && <QuotaTab ledgers={tenantQuotaLedgers} />}
+        {activeTab === 'timeline' && (
+          <MergedTimelineTab
+            tenantId={id}
+            tierChangeRecords={tierChangeRecords}
+            quotaLedgers={tenantQuotaLedgers}
+            accessGrants={tenantAccessGrants}
+            bills={tenantBills}
+            tiers={tiers}
+            storageUnits={storageUnits}
+          />
+        )}
       </div>
 
       {/* 调整额度弹窗 */}
@@ -1464,5 +1482,194 @@ function AccessGrantModal({
         </form>
       )}
     </Modal>
+  );
+}
+
+// ==================== 综合时间线 Tab ====================
+type TimelineEventType = 'tier_change' | 'quota' | 'access' | 'bill';
+
+interface TimelineEvent {
+  id: string;
+  type: TimelineEventType;
+  time: string;
+  title: string;
+  detail: string;
+  icon: React.ReactNode;
+  colorClass: string;
+}
+
+const EVENT_TYPE_STYLES: Record<TimelineEventType, { icon: React.ReactNode; colorClass: string }> = {
+  tier_change: {
+    icon: <TrendingDown className="w-4 h-4" />,
+    colorClass: 'bg-violet-100 text-violet-700 border-violet-300',
+  },
+  quota: {
+    icon: <Wallet className="w-4 h-4" />,
+    colorClass: 'bg-amber-100 text-amber-700 border-amber-300',
+  },
+  access: {
+    icon: <ShieldCheck className="w-4 h-4" />,
+    colorClass: 'bg-sky-100 text-sky-700 border-sky-300',
+  },
+  bill: {
+    icon: <CreditCard className="w-4 h-4" />,
+    colorClass: 'bg-emerald-100 text-emerald-700 border-emerald-300',
+  },
+};
+
+interface MergedTimelineTabProps {
+  tenantId: string;
+  tierChangeRecords: TierChangeRecord[];
+  quotaLedgers: QuotaLedger[];
+  accessGrants: AccessGrant[];
+  bills: Bill[];
+  tiers: TenantTier[];
+  storageUnits: StorageUnit[];
+}
+
+function MergedTimelineTab({
+  tenantId,
+  tierChangeRecords,
+  quotaLedgers,
+  accessGrants,
+  bills,
+  tiers,
+  storageUnits,
+}: MergedTimelineTabProps) {
+  const [filterType, setFilterType] = useState<TimelineEventType | 'all'>('all');
+
+  const allEvents = useMemo(() => {
+    const events: TimelineEvent[] = [];
+
+    for (const rec of tierChangeRecords.filter(r => r.tenantId === tenantId)) {
+      const fromTier = tiers.find(t => t.id === rec.fromTierId);
+      const toTier = tiers.find(t => t.id === rec.toTierId);
+      events.push({
+        id: rec.id,
+        type: 'tier_change',
+        time: rec.createdAt,
+        title: `等级变更：${fromTier?.name ?? '?'} → ${toTier?.name ?? '?'}`,
+        detail: `额度 ${rec.quotaBefore} → ${rec.quotaAfter}（${rec.carryStrategy === 'ratio' ? '按比例结转' : '清零策略'}）${rec.reason ? `，原因：${rec.reason}` : ''}`,
+        icon: EVENT_TYPE_STYLES.tier_change.icon,
+        colorClass: EVENT_TYPE_STYLES.tier_change.colorClass,
+      });
+    }
+
+    for (const ledger of quotaLedgers) {
+      const cfg = QUOTA_TYPE_CONFIG[ledger.type];
+      events.push({
+        id: ledger.id,
+        type: 'quota',
+        time: ledger.createdAt,
+        title: `额度${cfg.label}：${ledger.delta > 0 ? '+' : ''}${ledger.delta}`,
+        detail: `余额 ${ledger.balanceAfter}，${ledger.reason}`,
+        icon: EVENT_TYPE_STYLES.quota.icon,
+        colorClass: EVENT_TYPE_STYLES.quota.colorClass,
+      });
+    }
+
+    for (const grant of accessGrants) {
+      const unit = storageUnits.find(u => u.id === grant.unitId);
+      const actionLabel = grant.status === 'expired' ? '授权过期' : grant.status === 'frozen' ? '授权冻结' : '授权生效';
+      events.push({
+        id: grant.id,
+        type: 'access',
+        time: grant.createdAt,
+        title: `门禁${actionLabel}：${unit?.code ?? '?'}`,
+        detail: `${grant.startDate} ~ ${grant.endDate}${grant.frozenReason ? `，冻结原因：${grant.frozenReason}` : ''}`,
+        icon: EVENT_TYPE_STYLES.access.icon,
+        colorClass: EVENT_TYPE_STYLES.access.colorClass,
+      });
+    }
+
+    for (const bill of bills) {
+      events.push({
+        id: bill.id,
+        type: 'bill',
+        time: bill.issuedAt,
+        title: `账单生成：${bill.billNo}`,
+        detail: `账期 ${formatDate(bill.periodStart)} ~ ${formatDate(bill.periodEnd)}，金额 ¥${bill.totalAmount.toFixed(2)}，${bill.status === 'paid' ? '已支付' : '待支付'}`,
+        icon: EVENT_TYPE_STYLES.bill.icon,
+        colorClass: EVENT_TYPE_STYLES.bill.colorClass,
+      });
+    }
+
+    return events.sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
+  }, [tenantId, tierChangeRecords, quotaLedgers, accessGrants, bills, tiers, storageUnits]);
+
+  const filteredEvents = filterType === 'all'
+    ? allEvents
+    : allEvents.filter(e => e.type === filterType);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-sm text-ink-500">筛选：</span>
+        {([
+          { value: 'all', label: '全部' },
+          { value: 'tier_change', label: '升降级' },
+          { value: 'quota', label: '额度变动' },
+          { value: 'access', label: '门禁授权' },
+          { value: 'bill', label: '账单' },
+        ] as const).map(opt => (
+          <button
+            key={opt.value}
+            type="button"
+            onClick={() => setFilterType(opt.value)}
+            className={cn(
+              'px-3 h-7 rounded-md text-xs font-medium border transition-colors',
+              filterType === opt.value
+                ? 'bg-brand-500 text-white border-brand-500'
+                : 'bg-white text-ink-500 border-ink-200 hover:border-brand-300',
+            )}
+          >
+            {opt.label}
+          </button>
+        ))}
+        <span className="ml-auto text-xs text-ink-400">
+          共 {filteredEvents.length} 条记录
+        </span>
+      </div>
+
+      {filteredEvents.length === 0 ? (
+        <div className="panel-card p-8">
+          <EmptyState
+            icon={GitMerge}
+            title="暂无合并时间线记录"
+            description="该租户还没有产生升降级、额度、门禁或账单相关记录。"
+            size="sm"
+          />
+        </div>
+      ) : (
+        <div className="relative">
+          <div className="absolute left-[19px] top-3 bottom-3 w-0.5 bg-ink-100" />
+          <div className="space-y-3">
+            {filteredEvents.map((event) => (
+              <div key={event.id} className="relative flex items-start gap-4 pl-1">
+                <div
+                  className={cn(
+                    'relative z-10 w-[38px] h-[38px] rounded-full border-2 flex items-center justify-center shrink-0',
+                    event.colorClass,
+                  )}
+                >
+                  {event.icon}
+                </div>
+                <div className="flex-1 min-w-0 panel-card p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-ink-800">{event.title}</div>
+                      <div className="text-xs text-ink-500 mt-1 leading-relaxed">{event.detail}</div>
+                    </div>
+                    <div className="text-xs text-ink-400 font-mono tabular-nums whitespace-nowrap shrink-0">
+                      {formatDateTime(event.time)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

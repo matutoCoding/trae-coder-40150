@@ -23,6 +23,8 @@ import type {
   AuditLog,
   TierChangePayload,
   QuotaAdjustPayload,
+  BillPreviewItem,
+  BillPreviewResult,
 } from '../types';
 
 // 当前登录的管理员会话信息
@@ -143,6 +145,7 @@ interface AppStoreActions {
   getBillById: (id: string) => Bill | undefined;
   markBillPaid: (id: string) => void;
   generateBills: (periodStart: string, periodEnd: string) => void;
+  previewBills: (periodStart: string, periodEnd: string) => BillPreviewResult;
   // 门禁授权相关
   freezeAccess: (id: string, reason: string) => void;
   unfreezeAccess: (id: string) => void;
@@ -483,12 +486,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
         const effectiveStart = cStart > pStart ? cStart : pStart;
         const effectiveEnd = cEnd < pEnd ? cEnd : pEnd;
 
-        if (effectiveStart >= effectiveEnd) continue;
+        if (effectiveStart > effectiveEnd) continue;
 
-        const days = Math.ceil(
-          (effectiveEnd.getTime() - effectiveStart.getTime()) /
-            (1000 * 60 * 60 * 24)
-        );
+        const days =
+          Math.round(
+            (effectiveEnd.getTime() - effectiveStart.getTime()) /
+              (1000 * 60 * 60 * 24)
+          ) + 1;
         if (days <= 0) continue;
 
         // 找到对应仓库单元
@@ -601,6 +605,82 @@ export const useAppStore = create<AppStore>((set, get) => ({
         }
       );
     }
+  },
+
+  previewBills: (periodStart: string, periodEnd: string): BillPreviewResult => {
+    const store = get();
+    const { pricingRule, contracts, storageUnits, accessGrants, tenants } = store;
+    if (!pricingRule) return { items: [], billCount: 0, totalAmount: 0, frozenCount: 0 };
+
+    const activeContracts = contracts.filter(c => c.status === 'active');
+    const contractsByTenant = new Map<string, RentalContract[]>();
+    for (const contract of activeContracts) {
+      const arr = contractsByTenant.get(contract.tenantId) || [];
+      arr.push(contract);
+      contractsByTenant.set(contract.tenantId, arr);
+    }
+
+    const previewItems: BillPreviewItem[] = [];
+    const tenantsToFreeze: string[] = [];
+
+    for (const [tenantId, tenantContracts] of contractsByTenant) {
+      const tenant = tenants.find(t => t.id === tenantId);
+      let tenantTotal = 0;
+
+      for (const contract of tenantContracts) {
+        const cStart = new Date(contract.startDate);
+        const cEnd = contract.endDate
+          ? new Date(contract.endDate)
+          : new Date(periodEnd);
+        const pStart = new Date(periodStart);
+        const pEnd = new Date(periodEnd);
+        const effectiveStart = cStart > pStart ? cStart : pStart;
+        const effectiveEnd = cEnd < pEnd ? cEnd : pEnd;
+
+        if (effectiveStart > effectiveEnd) continue;
+
+        const days =
+          Math.round(
+            (effectiveEnd.getTime() - effectiveStart.getTime()) /
+              (1000 * 60 * 60 * 24)
+          ) + 1;
+        if (days <= 0) continue;
+
+        const unit = storageUnits.find(u => u.id === contract.unitId);
+        if (!unit) continue;
+
+        const calc = calculateRental(pricingRule, days, 1);
+
+        previewItems.push({
+          tenantId,
+          tenantName: tenant?.name ?? '未知',
+          unitCode: unit.code,
+          days,
+          pricingType: calc.pricingType,
+          unitPrice: calc.unitPrice,
+          subtotal: calc.subtotal,
+          remark: calc.remark || '',
+        });
+        tenantTotal += calc.subtotal;
+      }
+
+      if (tenantTotal > pricingRule.overdueFreezeThreshold) {
+        tenantsToFreeze.push(tenantId);
+      }
+    }
+
+    const totalAmount = Math.round(
+      previewItems.reduce((sum, i) => sum + i.subtotal, 0) * 100
+    ) / 100;
+
+    const billCount = new Set(previewItems.map(i => i.tenantId)).size;
+    const frozenCount = tenantsToFreeze.reduce((count, tid) => {
+      return count + accessGrants.filter(
+        g => g.tenantId === tid && g.status === 'active'
+      ).length;
+    }, 0);
+
+    return { items: previewItems, billCount, totalAmount, frozenCount };
   },
 
   // ====== 门禁授权 ======

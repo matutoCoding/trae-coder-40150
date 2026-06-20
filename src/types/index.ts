@@ -188,3 +188,23 @@ export interface PricingCalculateResult {
   subtotal: number;
   remark: string;
 }
+
+// 账单预览明细行
+export interface BillPreviewItem {
+  tenantId: string;
+  tenantName: string;
+  unitCode: string;
+  days: number;
+  pricingType: PricingType;
+  unitPrice: number;
+  subtotal: number;
+  remark: string;
+}
+
+// 账单预览结果
+export interface BillPreviewResult {
+  items: BillPreviewItem[];
+  billCount: number;
+  totalAmount: number;
+  frozenCount: number;
+}

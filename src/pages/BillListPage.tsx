@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { FileSpreadsheet, Plus, Search, Eye, CheckCircle2, ChevronDown, CheckSquare, Loader2, AlertTriangle } from 'lucide-react';
+import { FileSpreadsheet, Plus, Search, Eye, CheckCircle2, ChevronDown, CheckSquare, Loader2, AlertTriangle, Eye as PreviewIcon } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Card, CardContent } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -13,7 +13,7 @@ import { TierBadge } from '@/components/shared/TierBadge';
 import { useAppStore } from '@/store';
 import { cn } from '@/lib/utils';
 import { formatDate } from '@/utils/date';
-import type { Bill, BillStatus } from '@/types';
+import type { Bill, BillStatus, BillPreviewResult, PricingType } from '@/types';
 
 // 账期选项（2026-04 / 05 / 06）
 const PERIOD_OPTIONS = [
@@ -33,7 +33,7 @@ const STATUS_OPTIONS: { value: BillStatus | 'all'; label: string }[] = [
 ];
 
 export default function BillListPage() {
-  const { bills, tenants, generateBills, markBillPaid } = useAppStore();
+  const { bills, tenants, generateBills, previewBills, markBillPaid } = useAppStore();
   const [selectedPeriod, setSelectedPeriod] = useState('all');
   const [selectedStatus, setSelectedStatus] = useState<BillStatus | 'all'>('all');
   const [searchKeyword, setSearchKeyword] = useState('');
@@ -50,6 +50,8 @@ export default function BillListPage() {
     billCount: number;
     frozenCount: number;
   } | null>(null);
+  const [previewResult, setPreviewResult] = useState<BillPreviewResult | null>(null);
+  const [previewStep, setPreviewStep] = useState<'form' | 'preview' | 'result'>('form');
 
   // 筛选后的账单列表
   const filteredBills = useMemo(() => {
@@ -156,29 +158,31 @@ export default function BillListPage() {
     XLSX.writeFile(workbook, fileName);
   };
 
-  // 生成账单
+  const handlePreviewBills = useCallback(() => {
+    if (!periodStart || !periodEnd) return;
+    const result = previewBills(periodStart, periodEnd);
+    setPreviewResult(result);
+    setPreviewStep('preview');
+  }, [periodStart, periodEnd, previewBills]);
+
   const handleGenerateBills = async () => {
     setGenerating(true);
     setGenerateProgress(0);
     setGenerateResult(null);
 
-    // 模拟进度条动画
     const totalSteps = 10;
     for (let i = 1; i <= totalSteps; i++) {
       await new Promise((resolve) => setTimeout(resolve, 120));
       setGenerateProgress((i / totalSteps) * 100);
     }
 
-    // 记录生成前的数量
     const beforeCount = bills.length;
     const beforeActiveGrants = useAppStore.getState().accessGrants.filter(
       (g) => g.status === 'active',
     ).length;
 
-    // 调用 store 方法生成账单
     generateBills(periodStart, periodEnd);
 
-    // 等待一个 tick，让 store 更新
     await new Promise((resolve) => setTimeout(resolve, 50));
     const latestState = useAppStore.getState();
     const afterCount = latestState.bills.length;
@@ -191,13 +195,15 @@ export default function BillListPage() {
       frozenCount: beforeActiveGrants - afterActiveGrants,
     });
     setGenerating(false);
+    setPreviewStep('result');
   };
 
-  // 重置生成结果（关闭 Modal 时）
   const handleCloseGenerateModal = () => {
     setGenerateModalOpen(false);
     setGenerateResult(null);
     setGenerateProgress(0);
+    setPreviewResult(null);
+    setPreviewStep('form');
   };
 
   // 从 store 获取租户信息（表格渲染用）
@@ -512,11 +518,28 @@ export default function BillListPage() {
       <Modal
         open={generateModalOpen}
         onClose={handleCloseGenerateModal}
-        maxWidth="md"
+        maxWidth={previewStep === 'preview' ? 'lg' : 'md'}
         title={
           <div className="flex items-center gap-2">
             <Plus className="w-5 h-5 text-brand-500" />
             生成账单
+            <div className="ml-3 flex items-center gap-1.5 text-xs">
+              {(['form', 'preview', 'result'] as const).map((step, idx) => (
+                <div
+                  key={step}
+                  className={cn(
+                    'w-7 h-7 rounded-full flex items-center justify-center text-xs font-semibold border-2 transition-colors',
+                    previewStep === step
+                      ? 'bg-brand-500 text-white border-brand-500'
+                      : idx < ['form', 'preview', 'result'].indexOf(previewStep)
+                        ? 'bg-success text-white border-success'
+                        : 'bg-white text-ink-400 border-ink-200',
+                  )}
+                >
+                  {idx + 1}
+                </div>
+              ))}
+            </div>
           </div>
         }
         footer={
@@ -527,30 +550,50 @@ export default function BillListPage() {
               onClick={handleCloseGenerateModal}
               disabled={generating}
             >
-              {generateResult ? '关闭' : '取消'}
+              {previewStep === 'result' ? '关闭' : '取消'}
             </Button>
-            {!generateResult && (
+            {previewStep === 'form' && (
               <Button
                 variant="primary"
                 size="md"
-                onClick={handleGenerateBills}
-                loading={generating}
+                onClick={handlePreviewBills}
                 disabled={!periodStart || !periodEnd}
               >
-                <Plus className="w-4 h-4" />
-                开始生成
+                <PreviewIcon className="w-4 h-4" />
+                预览账单
               </Button>
+            )}
+            {previewStep === 'preview' && (
+              <>
+                <Button
+                  variant="ghost"
+                  size="md"
+                  onClick={() => setPreviewStep('form')}
+                  disabled={generating}
+                >
+                  返回修改
+                </Button>
+                <Button
+                  variant="primary"
+                  size="md"
+                  onClick={handleGenerateBills}
+                  loading={generating}
+                  disabled={previewResult && previewResult.billCount === 0}
+                >
+                  <Plus className="w-4 h-4" />
+                  确认生成
+                </Button>
+              </>
             )}
           </>
         }
       >
-        {!generateResult ? (
+        {previewStep === 'form' && (
           <div className="space-y-5">
             <p className="text-sm text-ink-500">
               选择需要生成账单的账期范围，系统将根据活跃的租期合同自动计算并生成账单。
             </p>
 
-            {/* 开始日期 */}
             <div>
               <label className="block text-sm font-medium text-ink-700 mb-2">
                 账期开始日期
@@ -563,7 +606,6 @@ export default function BillListPage() {
               />
             </div>
 
-            {/* 结束日期 */}
             <div>
               <label className="block text-sm font-medium text-ink-700 mb-2">
                 账期结束日期
@@ -576,7 +618,6 @@ export default function BillListPage() {
               />
             </div>
 
-            {/* 警告提示 */}
             <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 text-sm">
               <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
               <div>
@@ -586,10 +627,13 @@ export default function BillListPage() {
                 </p>
               </div>
             </div>
+          </div>
+        )}
 
-            {/* 进度条 */}
-            {generating && (
-              <div className="space-y-2">
+        {previewStep === 'preview' && previewResult && (
+          <div className="space-y-4">
+            {generating ? (
+              <div className="space-y-4 py-6">
                 <div className="flex items-center justify-between text-sm">
                   <span className="flex items-center gap-2 text-ink-600">
                     <Loader2 className="w-4 h-4 animate-spin text-brand-500" />
@@ -606,10 +650,100 @@ export default function BillListPage() {
                   />
                 </div>
               </div>
+            ) : (
+              <>
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="p-3 rounded-lg bg-brand-50 border border-brand-100 text-center">
+                    <div className="text-2xl font-serif font-bold text-brand-700 font-mono">
+                      {previewResult.billCount}
+                    </div>
+                    <div className="text-xs text-ink-500 mt-0.5">预计账单数</div>
+                  </div>
+                  <div className="p-3 rounded-lg bg-amber-50 border border-amber-100 text-center">
+                    <div className="text-2xl font-serif font-bold text-amber-600 font-mono">
+                      ¥{previewResult.totalAmount.toFixed(2)}
+                    </div>
+                    <div className="text-xs text-ink-500 mt-0.5">预计总金额</div>
+                  </div>
+                  <div className="p-3 rounded-lg bg-red-50 border border-red-100 text-center">
+                    <div className="text-2xl font-serif font-bold text-danger font-mono">
+                      {previewResult.frozenCount}
+                    </div>
+                    <div className="text-xs text-ink-500 mt-0.5">预计冻结门禁</div>
+                  </div>
+                </div>
+
+                {previewResult.items.length === 0 ? (
+                  <div className="py-8 text-center">
+                    <div className="w-12 h-12 rounded-full bg-ink-50 flex items-center justify-center mx-auto mb-3 text-ink-300">
+                      <FileSpreadsheet className="w-6 h-6" />
+                    </div>
+                    <p className="text-ink-500 text-sm">该账期内无活跃合同，预计生成 0 张账单</p>
+                  </div>
+                ) : (
+                  <div className="border border-ink-100 rounded-lg overflow-hidden">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="bg-ink-50 border-b border-ink-100">
+                          <th className="text-left px-3 py-2.5 text-ink-600 font-medium">租户</th>
+                          <th className="text-left px-3 py-2.5 text-ink-600 font-medium">仓号</th>
+                          <th className="text-center px-3 py-2.5 text-ink-600 font-medium">天数</th>
+                          <th className="text-center px-3 py-2.5 text-ink-600 font-medium">计费类型</th>
+                          <th className="text-right px-3 py-2.5 text-ink-600 font-medium">单价</th>
+                          <th className="text-right px-3 py-2.5 text-ink-600 font-medium">小计</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {previewResult.items.map((item, idx) => (
+                          <tr
+                            key={idx}
+                            className={cn(
+                              'border-b border-ink-50',
+                              idx % 2 === 0 ? 'bg-white' : 'bg-ink-25',
+                            )}
+                          >
+                            <td className="px-3 py-2.5 text-ink-700 font-medium">{item.tenantName}</td>
+                            <td className="px-3 py-2.5 font-mono text-brand-600">{item.unitCode}</td>
+                            <td className="px-3 py-2.5 text-center font-mono tabular-nums">{item.days}</td>
+                            <td className="px-3 py-2.5 text-center">
+                              <PricingTypeBadge type={item.pricingType} />
+                            </td>
+                            <td className="px-3 py-2.5 text-right font-mono tabular-nums">¥{item.unitPrice.toFixed(2)}</td>
+                            <td className="px-3 py-2.5 text-right font-mono tabular-nums font-semibold text-brand-700">¥{item.subtotal.toFixed(2)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot>
+                        <tr className="bg-brand-50/50 border-t border-ink-200">
+                          <td colSpan={5} className="px-3 py-2.5 text-right text-ink-600 font-medium">
+                            合计
+                          </td>
+                          <td className="px-3 py-2.5 text-right font-mono tabular-nums font-bold text-brand-700">
+                            ¥{previewResult.totalAmount.toFixed(2)}
+                          </td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                )}
+
+                {previewResult.frozenCount > 0 && (
+                  <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 text-sm">
+                    <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+                    <div>
+                      <p className="font-medium">冻结提醒</p>
+                      <p className="text-xs mt-0.5 opacity-90">
+                        生成后将冻结 {previewResult.frozenCount} 个门禁授权（账单金额超过冻结阈值）。
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </div>
-        ) : (
-          // 生成结果展示
+        )}
+
+        {previewStep === 'result' && generateResult && (
           <div className="py-4 space-y-6 text-center">
             <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-green-50 text-success">
               <CheckCircle2 className="w-10 h-10" />
@@ -638,5 +772,20 @@ export default function BillListPage() {
         )}
       </Modal>
     </div>
+  );
+}
+
+const PRICING_TYPE_LABELS: Record<PricingType, { label: string; className: string }> = {
+  min: { label: '起步价', className: 'bg-sky-100 text-sky-700 border-sky-200' },
+  normal: { label: '正常计费', className: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
+  max: { label: '封顶价', className: 'bg-violet-100 text-violet-700 border-violet-200' },
+};
+
+function PricingTypeBadge({ type }: { type: PricingType }) {
+  const cfg = PRICING_TYPE_LABELS[type];
+  return (
+    <span className={cn('inline-flex items-center px-2 py-0.5 rounded border text-xs font-medium', cfg.className)}>
+      {cfg.label}
+    </span>
   );
 }

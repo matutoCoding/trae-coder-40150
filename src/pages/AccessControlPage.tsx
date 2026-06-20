@@ -85,7 +85,6 @@ export default function AccessControlPage() {
 
   // 详情 Modal
   const [detailModalOpen, setDetailModalOpen] = useState(false);
-  const [detailGrant, setDetailGrant] = useState<AccessGrant | null>(null);
 
   // ========== 辅助函数 ==========
 
@@ -215,8 +214,7 @@ export default function AccessControlPage() {
 
   // 查看详情
   const handleViewDetail = (unit: StorageUnit) => {
-    const grant = getGrantForUnit(unit.id);
-    setDetailGrant(grant ?? null);
+    setCurrentUnit(unit);
     setDetailModalOpen(true);
   };
 
@@ -610,65 +608,105 @@ export default function AccessControlPage() {
       <Modal
         open={detailModalOpen}
         onClose={() => setDetailModalOpen(false)}
-        maxWidth="sm"
+        maxWidth="md"
         title={
           <div className="flex items-center gap-2">
             <Eye className="w-5 h-5 text-brand-500" />
-            授权详情
+            授权详情 — {currentUnit?.code ?? ''}
           </div>
         }
       >
-        {detailGrant ? (
-          (() => {
-            const tenant = getTenantById(detailGrant.tenantId);
-            const unit = storageUnits.find((u) => u.id === detailGrant.unitId);
-            const displayStatus = getDisplayStatus(
-              unit!,
-              detailGrant,
-            ) as AccessGrantStatus;
-            return (
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-ink-500">仓库单元</span>
-                  <span className="font-mono font-bold text-lg text-brand-700">
-                    {unit?.code}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-ink-500">授权状态</span>
-                  <AccessStatusBadge status={displayStatus} />
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-ink-500">授权租户</span>
-                  {tenant && (
-                    <div className="flex items-center gap-2">
-                      <TenantAvatar name={tenant.name} size="xs" />
-                      <span className="font-medium text-ink-800">
-                        {tenant.name}
-                      </span>
+        {currentUnit ? (() => {
+          const currentGrant = getGrantForUnit(currentUnit.id);
+          const historyGrants = accessGrants
+            .filter((g) => g.unitId === currentUnit.id && g.status === 'expired')
+            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+          return (
+            <div className="space-y-5">
+              {/* 当前有效授权 */}
+              <div>
+                <h4 className="text-sm font-semibold text-ink-700 mb-3 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-success" />
+                  当前授权
+                </h4>
+                {currentGrant ? (() => {
+                  const tenant = getTenantById(currentGrant.tenantId);
+                  const displayStatus = getDisplayStatus(currentUnit, currentGrant) as AccessGrantStatus;
+                  return (
+                    <div className="rounded-lg border border-brand-200 bg-brand-50/30 p-4 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm text-ink-500">授权状态</span>
+                        <AccessStatusBadge status={displayStatus} />
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm text-ink-500">授权租户</span>
+                        {tenant && (
+                          <div className="flex items-center gap-2">
+                            <TenantAvatar name={tenant.name} size="xs" />
+                            <span className="font-medium text-ink-800">{tenant.name}</span>
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm text-ink-500">授权有效期</span>
+                        <span className="font-mono text-sm text-ink-700">
+                          {currentGrant.startDate} ~ {currentGrant.endDate}
+                        </span>
+                      </div>
+                      {currentGrant.status === 'frozen' && currentGrant.frozenReason && (
+                        <div className="p-3 rounded bg-red-50 border border-red-100">
+                          <div className="text-xs text-red-500 font-medium mb-1">冻结原因</div>
+                          <div className="text-sm text-red-700">{currentGrant.frozenReason}</div>
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-ink-500">授权有效期</span>
-                  <span className="font-mono text-sm text-ink-700">
-                    {detailGrant.startDate} ~ {detailGrant.endDate}
-                  </span>
-                </div>
-                {detailGrant.status === 'frozen' && detailGrant.frozenReason && (
-                  <div className="p-3 rounded bg-red-50 border border-red-100">
-                    <div className="text-xs text-red-500 font-medium mb-1">
-                      冻结原因
-                    </div>
-                    <div className="text-sm text-red-700">
-                      {detailGrant.frozenReason}
-                    </div>
+                  );
+                })() : (
+                  <div className="rounded-lg border border-ink-200 bg-ink-50 p-4 text-center text-sm text-ink-400 italic">
+                    该仓号暂无有效授权
                   </div>
                 )}
               </div>
-            );
-          })()
-        ) : (
+
+              {/* 历史授权记录 */}
+              {historyGrants.length > 0 && (
+                <div>
+                  <h4 className="text-sm font-semibold text-ink-700 mb-3 flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-ink-400" />
+                    历史授权（{historyGrants.length}）
+                  </h4>
+                  <div className="space-y-2">
+                    {historyGrants.map((grant) => {
+                      const histTenant = getTenantById(grant.tenantId);
+                      return (
+                        <div
+                          key={grant.id}
+                          className="rounded-lg border border-ink-100 bg-white p-3 flex items-center justify-between gap-4"
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            {histTenant && <TenantAvatar name={histTenant.name} size="xs" />}
+                            <div className="min-w-0">
+                              <div className="text-sm font-medium text-ink-700 truncate">
+                                {histTenant?.name ?? '未知'}
+                              </div>
+                              <div className="text-xs text-ink-400 font-mono">
+                                {grant.startDate} ~ {grant.endDate}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="text-xs text-ink-400 shrink-0">
+                            {grant.createdAt.split(' ')[0]}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })() : (
           <div className="py-8 text-center text-ink-400 text-sm">
             暂无授权记录
           </div>
