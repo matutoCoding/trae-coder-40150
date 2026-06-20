@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useForm } from 'react-hook-form';
+import { useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import {
@@ -13,6 +13,7 @@ import {
   TrendingUp,
   Package,
   CalendarPlus,
+  Calendar,
   Snowflake,
   PlayCircle,
   Check,
@@ -23,6 +24,7 @@ import {
   TrendingDown,
   CreditCard,
   ShieldCheck,
+  XCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAppStore } from '@/store/useAppStore';
@@ -117,6 +119,9 @@ const AccessGrantSchema = z.object({
   unitId: z.string().min(1, '请选择仓库单元'),
   startDate: z.string().min(1, '请选择开始日期'),
   endDate: z.string().min(1, '请选择结束日期'),
+}).refine((data) => new Date(data.endDate) >= new Date(data.startDate), {
+  message: '结束日期不能早于开始日期',
+  path: ['endDate'],
 });
 
 type AccessGrantForm = z.infer<typeof AccessGrantSchema>;
@@ -1361,6 +1366,7 @@ function AccessGrantModal({
     register,
     handleSubmit,
     reset,
+    control,
     formState: { errors, isSubmitting },
   } = useForm<AccessGrantForm>({
     resolver: zodResolver(AccessGrantSchema),
@@ -1370,6 +1376,22 @@ function AccessGrantModal({
       endDate: '',
     },
   });
+
+  const startDate = useWatch({ control, name: 'startDate' });
+  const endDate = useWatch({ control, name: 'endDate' });
+
+  const dateRangeInvalid = useMemo(() => {
+    if (!startDate || !endDate) return false;
+    return new Date(startDate) > new Date(endDate);
+  }, [startDate, endDate]);
+
+  const dateRangeDays = useMemo(() => {
+    if (!startDate || !endDate || dateRangeInvalid) return 0;
+    return Math.round(
+      (new Date(endDate).getTime() - new Date(startDate).getTime()) /
+        (1000 * 60 * 60 * 24)
+    ) + 1;
+  }, [startDate, endDate, dateRangeInvalid]);
 
   useEffect(() => {
     if (!open) {
@@ -1393,7 +1415,7 @@ function AccessGrantModal({
             size="md"
             onClick={handleSubmit(onSubmit)}
             loading={isSubmitting}
-            disabled={rentedUnits.length === 0}
+            disabled={rentedUnits.length === 0 || dateRangeInvalid}
           >
             确认授权
           </Button>
@@ -1452,7 +1474,7 @@ function AccessGrantModal({
                 className={cn(
                   'w-full h-10 px-3 rounded-md border text-sm text-ink-700',
                   'focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400 transition-all',
-                  errors.startDate ? 'border-danger' : 'border-ink-200'
+                  dateRangeInvalid ? 'border-danger' : errors.startDate ? 'border-danger' : 'border-ink-200'
                 )}
               />
               {errors.startDate && (
@@ -1471,7 +1493,7 @@ function AccessGrantModal({
                 className={cn(
                   'w-full h-10 px-3 rounded-md border text-sm text-ink-700',
                   'focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400 transition-all',
-                  errors.endDate ? 'border-danger' : 'border-ink-200'
+                  dateRangeInvalid ? 'border-danger' : errors.endDate ? 'border-danger' : 'border-ink-200'
                 )}
               />
               {errors.endDate && (
@@ -1481,6 +1503,18 @@ function AccessGrantModal({
               )}
             </div>
           </div>
+
+          {dateRangeInvalid ? (
+            <p className="text-xs text-danger flex items-center gap-1">
+              <XCircle className="w-3.5 h-3.5" />
+              开始日期晚于结束日期，请调整
+            </p>
+          ) : startDate && endDate ? (
+            <p className="text-xs text-brand-600 flex items-center gap-1">
+              <Calendar className="w-3.5 h-3.5" />
+              授权共 {dateRangeDays} 天
+            </p>
+          ) : null}
         </form>
       )}
     </Modal>
@@ -1551,9 +1585,14 @@ function MergedTimelineTab({
     const unitSet = new Set<string>();
     for (const g of accessGrants) unitSet.add(g.unitId);
     for (const c of contracts) unitSet.add(c.unitId);
+    for (const b of bills) {
+      for (const item of b.items) {
+        if (item.unitId) unitSet.add(item.unitId);
+      }
+    }
     return storageUnits.filter(u => unitSet.has(u.id))
       .sort((a, b) => a.code.localeCompare(b.code));
-  }, [accessGrants, contracts, storageUnits]);
+  }, [accessGrants, contracts, bills, storageUnits]);
 
   const availablePeriods = useMemo(() => {
     const periodSet = new Set<string>();
@@ -1608,19 +1647,62 @@ function MergedTimelineTab({
 
     for (const grant of accessGrants) {
       const unit = storageUnits.find(u => u.id === grant.unitId);
-      const actionLabel = grant.status === 'expired' ? '授权过期' : grant.status === 'frozen' ? '授权冻结' : '授权生效';
-      events.push({
-        id: grant.id,
-        type: 'access',
-        time: grant.createdAt,
-        title: `门禁${actionLabel}：${unit?.code ?? '?'}`,
-        detail: `${grant.startDate} ~ ${grant.endDate}${grant.frozenReason ? `，冻结原因：${grant.frozenReason}` : ''}`,
-        icon: EVENT_TYPE_STYLES.access.icon,
-        colorClass: EVENT_TYPE_STYLES.access.colorClass,
-        unitIds: [grant.unitId],
-        periodStart: grant.startDate,
-        periodEnd: grant.endDate,
-      });
+      const grantEvents = grant.events && grant.events.length > 0
+        ? grant.events
+        : [{ id: `${grant.id}-default`, type: 'created' as const, time: grant.createdAt }];
+
+      for (const ev of grantEvents) {
+        let title = '';
+        let detail = '';
+        let colorClass = EVENT_TYPE_STYLES.access.colorClass;
+
+        switch (ev.type) {
+          case 'created':
+            title = `门禁授权：${unit?.code ?? '?'}`;
+            detail = `有效期 ${grant.startDate} ~ ${grant.endDate}`;
+            if (ev.operatorName) detail += `，操作人：${ev.operatorName}`;
+            break;
+          case 'frozen':
+            title = `门禁冻结：${unit?.code ?? '?'}`;
+            detail = ev.reason ? `原因：${ev.reason}` : '欠费冻结';
+            if (ev.operatorName) detail += `，操作人：${ev.operatorName}`;
+            colorClass = 'bg-danger-100 text-danger-700 border-danger-300';
+            break;
+          case 'unfrozen':
+            title = `门禁解冻：${unit?.code ?? '?'}`;
+            detail = ev.reason ? `原因：${ev.reason}` : '欠费结清自动解冻';
+            if (ev.operatorName) detail += `，操作人：${ev.operatorName}`;
+            colorClass = 'bg-success-100 text-success-700 border-success-300';
+            break;
+          case 'expired':
+            title = `门禁到期：${unit?.code ?? '?'}`;
+            detail = `授权至 ${grant.endDate} 自然到期`;
+            colorClass = 'bg-ink-100 text-ink-600 border-ink-300';
+            break;
+          case 'superseded':
+            title = `授权被覆盖：${unit?.code ?? '?'}`;
+            detail = ev.relatedGrantTenantName
+              ? `被 ${ev.relatedGrantTenantName} 的新授权覆盖`
+              : '被新授权覆盖';
+            colorClass = 'bg-amber-100 text-amber-700 border-amber-300';
+            break;
+          default:
+            title = `门禁事件：${unit?.code ?? '?'}`;
+        }
+
+        events.push({
+          id: `${grant.id}-${ev.id}`,
+          type: 'access',
+          time: ev.time,
+          title,
+          detail,
+          icon: EVENT_TYPE_STYLES.access.icon,
+          colorClass,
+          unitIds: [grant.unitId],
+          periodStart: grant.startDate,
+          periodEnd: grant.endDate,
+        });
+      }
     }
 
     for (const bill of bills) {
@@ -1656,9 +1738,10 @@ function MergedTimelineTab({
           const eventStartYM = e.periodStart.slice(0, 7);
           const eventEndYM = e.periodEnd.slice(0, 7);
           const inRange = filterPeriod >= eventStartYM && filterPeriod <= eventEndYM;
-          if (!inRange && e.type !== 'tier_change') return false;
-        } else if (e.type !== 'tier_change') {
-          return false;
+          if (!inRange) return false;
+        } else {
+          const eventYM = e.time.slice(0, 7);
+          if (eventYM !== filterPeriod) return false;
         }
       }
       return true;
@@ -1798,6 +1881,18 @@ function MergedTimelineTab({
                               </span>
                             );
                           })}
+                        </div>
+                      )}
+                      {event.periodStart && event.periodEnd && (
+                        <div className="mt-2">
+                          <span className={cn(
+                            'inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border',
+                            filterPeriod !== 'all' && event.periodStart.slice(0, 7) <= filterPeriod && event.periodEnd.slice(0, 7) >= filterPeriod
+                              ? 'bg-emerald-500 text-white border-emerald-500'
+                              : 'bg-emerald-50 text-emerald-700 border-emerald-200',
+                          )}>
+                            {event.periodStart.slice(0, 7)} 账期
+                          </span>
                         </div>
                       )}
                     </div>

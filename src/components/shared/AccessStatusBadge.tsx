@@ -33,6 +33,11 @@ const STATUS_CONFIG: Record<
     seal: false,
     label: '过期',
   },
+  revoked: {
+    variant: 'warning',
+    seal: false,
+    label: '已撤销',
+  },
 };
 
 /**

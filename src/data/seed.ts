@@ -105,6 +105,7 @@ export interface BillItem {
   id: string;
   billId: string;
   contractId: string;
+  unitId?: string;
   unitCode: string;
   days: number;
   pricingType: 'min' | 'normal' | 'max';
@@ -542,6 +543,7 @@ function createBills(
           id: uid('BI'),
           billId,
           contractId: contract.id,
+          unitId: unit.id,
           unitCode: unit.code,
           days: calc.days,
           pricingType: calc.pricingType,

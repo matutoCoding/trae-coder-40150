@@ -21,7 +21,7 @@ import { TenantAvatar } from '@/components/shared/TenantAvatar';
 import { useAppStore } from '@/store';
 import { cn } from '@/lib/utils';
 import { formatDate } from '@/utils/date';
-import type { StorageUnit, StorageUnitSize, AccessGrantStatus, AccessGrant } from '@/types';
+import type { StorageUnit, StorageUnitSize, AccessGrantStatus, AccessGrant, AccessGrantEventType } from '@/types';
 
 // 规格徽章颜色配置
 const SIZE_BADGE_CONFIG: Record<StorageUnitSize, { label: string; className: string }> = {
@@ -48,6 +48,7 @@ const STATUS_COLOR_BAR: Record<AccessGrantStatus | 'idle', string> = {
   active: 'bg-success',
   frozen: 'bg-danger',
   expired: 'bg-ink-400',
+  revoked: 'bg-warning',
   idle: 'bg-brand-400',
 };
 
@@ -57,6 +58,7 @@ const STATUS_FILTER_OPTIONS: { value: AccessGrantStatus | 'all'; label: string }
   { value: 'active', label: '正常' },
   { value: 'frozen', label: '冻结' },
   { value: 'expired', label: '过期' },
+  { value: 'revoked', label: '已撤销' },
 ];
 
 // 区域选项
@@ -109,6 +111,7 @@ export default function AccessControlPage() {
       const grants = accessGrants.filter((g) =>
         g.unitId === unitId
         && g.status !== 'expired'
+        && new Date(g.startDate) <= today
         && new Date(g.endDate) >= today
       );
       if (grants.length === 0) return undefined;
@@ -662,23 +665,110 @@ export default function AccessControlPage() {
             .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
           const currentGrant = getGrantForUnit(currentUnit.id);
-          const historyGrants = allGrants.filter(g => g.id !== currentGrant?.id);
 
-          const getSuperseder = (grant: AccessGrant) =>
-            grant.supersededByGrantId ? allGrants.find(g => g.id === grant.supersededByGrantId) : undefined;
+          type TimelineItem = {
+            id: string;
+            type: AccessGrantEventType | 'expired_natural';
+            time: string;
+            operatorName?: string;
+            reason?: string;
+            grantId: string;
+            tenantId: string;
+            tenantName: string;
+            startDate: string;
+            endDate: string;
+            relatedGrantId?: string;
+            relatedGrantTenantName?: string;
+          };
+
+          const timelineItems: TimelineItem[] = [];
+          for (const grant of allGrants) {
+            const tenant = getTenantById(grant.tenantId);
+            const tenantName = tenant?.name ?? '未知租户';
+            const events = grant.events ?? [];
+
+            if (events.length === 0) {
+              timelineItems.push({
+                id: `${grant.id}-created`,
+                type: 'created',
+                time: grant.createdAt,
+                operatorName: grant.createdByName,
+                grantId: grant.id,
+                tenantId: grant.tenantId,
+                tenantName,
+                startDate: grant.startDate,
+                endDate: grant.endDate,
+              });
+            } else {
+              for (const evt of events) {
+                timelineItems.push({
+                  id: `${grant.id}-${evt.id}`,
+                  type: evt.type,
+                  time: evt.time,
+                  operatorName: evt.operatorName,
+                  reason: evt.reason,
+                  grantId: grant.id,
+                  tenantId: grant.tenantId,
+                  tenantName,
+                  startDate: grant.startDate,
+                  endDate: grant.endDate,
+                  relatedGrantId: evt.relatedGrantId,
+                  relatedGrantTenantName: evt.relatedGrantTenantName,
+                });
+              }
+            }
+
+            if (grant.status === 'expired' && !grant.supersededByGrantId) {
+              const endDateNext = new Date(grant.endDate);
+              endDateNext.setDate(endDateNext.getDate() + 1);
+              timelineItems.push({
+                id: `${grant.id}-expired`,
+                type: 'expired_natural',
+                time: endDateNext.toISOString().slice(0, 10) + ' 00:00:00',
+                grantId: grant.id,
+                tenantId: grant.tenantId,
+                tenantName,
+                startDate: grant.startDate,
+                endDate: grant.endDate,
+              });
+            }
+          }
+
+          timelineItems.sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
+
+          const getEventLabel = (type: TimelineItem['type']) => {
+            switch (type) {
+              case 'created': return '授权创建';
+              case 'frozen': return '门禁冻结';
+              case 'unfrozen': return '门禁解冻';
+              case 'superseded': return '授权被覆盖';
+              case 'expired_natural': return '自然到期';
+              default: return type;
+            }
+          };
+
+          const getEventColor = (type: TimelineItem['type']) => {
+            switch (type) {
+              case 'created': return { dot: 'bg-success', ring: 'bg-success/10', text: 'text-success-700' };
+              case 'frozen': return { dot: 'bg-danger', ring: 'bg-danger/10', text: 'text-danger-700' };
+              case 'unfrozen': return { dot: 'bg-amber-500', ring: 'bg-amber-500/10', text: 'text-amber-700' };
+              case 'superseded': return { dot: 'bg-brand-500', ring: 'bg-brand-500/10', text: 'text-brand-700' };
+              case 'expired_natural': return { dot: 'bg-ink-400', ring: 'bg-ink-100', text: 'text-ink-600' };
+              default: return { dot: 'bg-ink-400', ring: 'bg-ink-100', text: 'text-ink-600' };
+            }
+          };
 
           return (
             <div className="space-y-5">
-              {/* 当前授权 */}
+              {/* 当前授权状态卡 */}
               <div>
                 <h4 className="text-sm font-semibold text-ink-700 mb-3 flex items-center gap-2">
                   <span className="w-2 h-2 rounded-full bg-success animate-pulse" />
-                  当前授权（{currentGrant ? '有效中' : '待授权'}）
+                  当前状态
                 </h4>
                 {currentGrant ? (() => {
                   const tenant = getTenantById(currentGrant.tenantId);
                   const displayStatus = getDisplayStatus(currentUnit, currentGrant) as AccessGrantStatus;
-                  const supersededIds = allGrants.filter(g => g.supersededByGrantId === currentGrant.id).map(g => g.id);
                   return (
                     <div className="rounded-lg border-2 border-success/30 bg-success/5 p-4 space-y-3">
                       <div className="grid grid-cols-2 gap-3">
@@ -708,12 +798,6 @@ export default function AccessControlPage() {
                           <div className="text-sm text-red-700">{currentGrant.frozenReason}</div>
                         </div>
                       )}
-                      {supersededIds.length > 0 && (
-                        <div className="p-3 rounded bg-brand-50 border border-brand-100 flex items-start gap-2 text-xs text-brand-700">
-                          <ArrowRight className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-                          <span>本次授权覆盖了历史上的 <strong>{supersededIds.length}</strong> 条授权记录</span>
-                        </div>
-                      )}
                     </div>
                   );
                 })() : (
@@ -723,67 +807,75 @@ export default function AccessControlPage() {
                 )}
               </div>
 
-              {/* 历史时间轴 */}
-              {historyGrants.length > 0 && (
+              {/* 完整事件时间轴 */}
+              {timelineItems.length > 0 && (
                 <div>
                   <h4 className="text-sm font-semibold text-ink-700 mb-3 flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-ink-400" />
-                    历史授权时间轴（{historyGrants.length}）
+                    <span className="w-2 h-2 rounded-full bg-brand-500" />
+                    授权事件时间轴（共 {timelineItems.length} 条事件）
                   </h4>
                   <div className="relative">
                     <div className="absolute left-[19px] top-2 bottom-2 w-0.5 bg-ink-100" />
                     <div className="space-y-3">
-                      {historyGrants.map((grant) => {
-                        const histTenant = getTenantById(grant.tenantId);
-                        const superseder = getSuperseder(grant);
-                        const supersederTenant = superseder ? getTenantById(superseder.tenantId) : null;
-                        const isExpired = grant.status === 'expired';
+                      {timelineItems.map((item) => {
+                        const color = getEventColor(item.type);
+                        const isCurrent = currentGrant?.id === item.grantId && item.type === 'created';
                         return (
-                          <div key={grant.id} className="relative flex items-start gap-4 pl-1">
+                          <div key={item.id} className="relative flex items-start gap-4 pl-1">
                             <div
                               className={cn(
-                                'relative z-10 w-[38px] h-[38px] rounded-full border-2 flex items-center justify-center shrink-0',
-                                isExpired ? 'bg-ink-100 text-ink-500 border-ink-200' : 'bg-amber-50 text-amber-600 border-amber-200',
+                                'relative z-10 w-[38px] h-[38px] rounded-full flex items-center justify-center shrink-0',
+                                color.ring,
                               )}
                             >
-                              {histTenant ? (
-                                <div className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold" style={{ backgroundColor: '#E3EDF7', color: '#1E3A5F' }}>
-                                  {histTenant.name.charAt(0)}
-                                </div>
-                              ) : (
-                                <UserPlus className="w-4 h-4" />
-                              )}
+                              <div className={cn('w-3 h-3 rounded-full', color.dot)} />
                             </div>
                             <div className="flex-1 min-w-0 panel-card p-3">
                               <div className="flex items-start justify-between gap-3">
                                 <div className="min-w-0 flex-1">
-                                  <div className="flex items-center gap-2">
-                                    {histTenant && <span className="font-medium text-ink-800 text-sm">{histTenant.name}</span>}
-                                    <AccessStatusBadge status={grant.status as AccessGrantStatus} />
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className={cn('font-semibold text-sm', color.text)}>
+                                      {getEventLabel(item.type)}
+                                    </span>
+                                    <span className="text-xs text-ink-500 font-medium">
+                                      {item.tenantName}
+                                    </span>
+                                    {isCurrent && (
+                                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-success-100 text-success-700 font-medium">
+                                        当前有效
+                                      </span>
+                                    )}
                                   </div>
                                   <div className="text-xs text-ink-500 mt-1 font-mono">
-                                    {grant.startDate} ~ {grant.endDate}
+                                    租期 {item.startDate} ~ {item.endDate}
                                   </div>
-                                  {superseder && (
-                                    <div className="mt-2 flex items-center gap-1.5 text-xs text-ink-500">
+                                  {item.operatorName && (
+                                    <div className="text-xs text-ink-500 mt-1.5">
+                                      操作人：<span className="text-ink-700 font-medium">{item.operatorName}</span>
+                                    </div>
+                                  )}
+                                  {item.reason && (
+                                    <div className="text-xs text-ink-600 mt-1.5 p-2 rounded bg-ink-50 border border-ink-100">
+                                      原因：{item.reason}
+                                    </div>
+                                  )}
+                                  {item.type === 'superseded' && item.relatedGrantTenantName && (
+                                    <div className="mt-2 flex items-center gap-1.5 text-xs text-brand-600">
                                       <ArrowRight className="w-3 h-3" />
                                       <span>
-                                        被 <strong className="text-ink-700">{supersederTenant?.name ?? '?'}</strong> 的授权覆盖
-                                        <span className="text-ink-400 ml-1">({superseder.createdAt.split(' ')[0]})</span>
+                                        被 <strong>{item.relatedGrantTenantName}</strong> 的新授权覆盖
                                       </span>
                                     </div>
                                   )}
-                                  {!superseder && isExpired && new Date(grant.endDate) < today && (
+                                  {item.type === 'expired_natural' && (
                                     <div className="mt-2 text-xs text-ink-400">
-                                      自然到期，未被后续授权覆盖
+                                      租期结束，授权自然失效
                                     </div>
                                   )}
-                                  {grant.frozenReason && grant.status === 'frozen' && (
-                                    <div className="mt-2 text-xs text-danger">冻结：{grant.frozenReason}</div>
-                                  )}
                                 </div>
-                                <div className="text-xs text-ink-400 font-mono whitespace-nowrap shrink-0">
-                                  {grant.createdAt.split(' ')[0]}
+                                <div className="text-xs text-ink-400 font-mono whitespace-nowrap shrink-0 text-right">
+                                  <div>{item.time.split(' ')[0]}</div>
+                                  <div className="text-[10px] text-ink-300">{item.time.split(' ')[1]?.slice(0, 5) ?? ''}</div>
                                 </div>
                               </div>
                             </div>

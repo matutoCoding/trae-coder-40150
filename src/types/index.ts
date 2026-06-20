@@ -130,7 +130,20 @@ export interface Bill {
 }
 
 // 门禁授权
-export type AccessGrantStatus = 'active' | 'frozen' | 'expired';
+export type AccessGrantStatus = 'active' | 'frozen' | 'expired' | 'revoked';
+
+export type AccessGrantEventType = 'created' | 'frozen' | 'unfrozen' | 'expired' | 'superseded';
+
+export interface AccessGrantEvent {
+  id: string;
+  type: AccessGrantEventType;
+  time: string;
+  operatorId?: string;
+  operatorName?: string;
+  reason?: string;
+  relatedGrantId?: string;
+  relatedGrantTenantName?: string;
+}
 
 export interface AccessGrant {
   id: string;
@@ -141,7 +154,10 @@ export interface AccessGrant {
   status: AccessGrantStatus;
   frozenReason?: string;
   createdAt: string;
+  createdBy?: string;
+  createdByName?: string;
   supersededByGrantId?: string;
+  events: AccessGrantEvent[];
 }
 
 // 审计日志

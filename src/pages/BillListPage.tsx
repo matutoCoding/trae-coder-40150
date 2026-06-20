@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { FileSpreadsheet, Plus, Search, Eye, CheckCircle2, ChevronDown, CheckSquare, Loader2, AlertTriangle, Eye as PreviewIcon, XCircle, Calendar, List as ListIcon, Receipt, DollarSign, ShieldAlert, TrendingDown } from 'lucide-react';
+import { FileSpreadsheet, Plus, Search, Eye, CheckCircle2, ChevronDown, CheckSquare, Loader2, AlertTriangle, Eye as PreviewIcon, XCircle, Calendar, List as ListIcon, Receipt, DollarSign, ShieldAlert, TrendingDown, Users, CalendarCheck } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Card, CardContent } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -13,7 +13,29 @@ import { TierBadge } from '@/components/shared/TierBadge';
 import { useAppStore } from '@/store';
 import { cn } from '@/lib/utils';
 import { formatDate } from '@/utils/date';
-import type { Bill, BillStatus, BillPreviewResult, PricingType } from '@/types';
+import type { Bill, BillStatus, BillPreviewResult, PricingType, AccessGrant, Tenant } from '@/types';
+
+// 付款明细
+interface PaymentRecord {
+  billId: string;
+  billNo: string;
+  tenantId: string;
+  tenantName: string;
+  period: string;
+  periodStart: string;
+  periodEnd: string;
+  amount: number;
+  paidAt: string;
+}
+
+// 收款批次
+interface PaymentBatch {
+  date: string;
+  totalAmount: number;
+  billCount: number;
+  tenantCount: number;
+  payments: PaymentRecord[];
+}
 
 // 账期选项（2026-04 / 05 / 06）
 const PERIOD_OPTIONS = [
@@ -33,10 +55,12 @@ const STATUS_OPTIONS: { value: BillStatus | 'all'; label: string }[] = [
 ];
 
 export default function BillListPage() {
-  const { bills, tenants, accessGrants, generateBills, previewBills, markBillPaid } = useAppStore();
+  const { bills, tenants, accessGrants, storageUnits, generateBills, previewBills, markBillPaid } = useAppStore();
   const [viewMode, setViewMode] = useState<'list' | 'reconciliation'>('list');
+  const [reconMode, setReconMode] = useState<'tenant' | 'payment'>('tenant');
   const [selectedPeriod, setSelectedPeriod] = useState('all');
   const [selectedStatus, setSelectedStatus] = useState<BillStatus | 'all'>('all');
+  const [selectedUnit, setSelectedUnit] = useState('all');
   const [searchKeyword, setSearchKeyword] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmPaidOpen, setConfirmPaidOpen] = useState(false);
@@ -55,6 +79,7 @@ export default function BillListPage() {
   const [previewStep, setPreviewStep] = useState<'form' | 'preview' | 'result'>('form');
   const [detailTenantId, setDetailTenantId] = useState<string | null>(null);
   const [detailPeriod, setDetailPeriod] = useState<string | null>(null);
+  const [detailPaymentDate, setDetailPaymentDate] = useState<string | null>(null);
 
   const dateRangeInvalid =
     periodStart && periodEnd && new Date(periodStart) > new Date(periodEnd);
@@ -78,6 +103,11 @@ export default function BillListPage() {
       }
       // 状态筛选
       if (selectedStatus !== 'all' && bill.status !== selectedStatus) return false;
+      // 仓号筛选
+      if (selectedUnit !== 'all') {
+        const hasUnit = bill.items.some((item) => item.unitId === selectedUnit);
+        if (!hasUnit) return false;
+      }
       // 租户搜索
       if (searchKeyword.trim()) {
         const tenant = tenants.find((t) => t.id === bill.tenantId);
@@ -92,7 +122,7 @@ export default function BillListPage() {
       }
       return true;
     });
-  }, [bills, tenants, selectedPeriod, selectedStatus, searchKeyword]);
+  }, [bills, tenants, selectedPeriod, selectedStatus, selectedUnit, searchKeyword]);
 
   // 全部可选的 bill（pending / overdue 状态）
   const payableBills = useMemo(
@@ -409,9 +439,13 @@ export default function BillListPage() {
 
   const reconciliationRows = useMemo(() => {
     const rowsMap = new Map<string, ReconciliationRow>();
-    const scopeBills = selectedPeriod !== 'all'
-      ? bills.filter(b => b.periodStart.slice(0, 7) === selectedPeriod)
-      : bills;
+    let scopeBills = bills;
+    if (selectedPeriod !== 'all') {
+      scopeBills = scopeBills.filter(b => b.periodStart.slice(0, 7) === selectedPeriod);
+    }
+    if (selectedUnit !== 'all') {
+      scopeBills = scopeBills.filter(b => b.items.some(item => item.unitId === selectedUnit));
+    }
 
     for (const bill of scopeBills) {
       const period = bill.periodStart.slice(0, 7);
@@ -455,7 +489,7 @@ export default function BillListPage() {
       );
     }
     return rows;
-  }, [bills, tenants, accessGrants, selectedPeriod, searchKeyword]);
+  }, [bills, tenants, accessGrants, selectedPeriod, selectedUnit, searchKeyword]);
 
   const reconciliationSummary = useMemo(() => {
     return reconciliationRows.reduce((acc, r) => {
@@ -466,6 +500,58 @@ export default function BillListPage() {
       return acc;
     }, { totalReceivable: 0, totalPaid: 0, totalUnpaid: 0, tenantWithDebt: 0 });
   }, [reconciliationRows]);
+
+  const paymentBatches = useMemo(() => {
+    let scopeBills = bills.filter(b => b.status === 'paid' && b.paidAt);
+    if (selectedPeriod !== 'all') {
+      scopeBills = scopeBills.filter(b => b.periodStart.slice(0, 7) === selectedPeriod);
+    }
+    if (selectedUnit !== 'all') {
+      scopeBills = scopeBills.filter(b => b.items.some(item => item.unitId === selectedUnit));
+    }
+    if (searchKeyword.trim()) {
+      const kw = searchKeyword.trim().toLowerCase();
+      scopeBills = scopeBills.filter(b => {
+        const t = tenants.find(tt => tt.id === b.tenantId);
+        return t && (t.name.toLowerCase().includes(kw) || t.phone.includes(kw));
+      });
+    }
+
+    const batchMap = new Map<string, PaymentBatch>();
+    for (const bill of scopeBills) {
+      const tenant = tenants.find(t => t.id === bill.tenantId);
+      if (!tenant || !bill.paidAt) continue;
+      const date = bill.paidAt.split(' ')[0];
+      const batch = batchMap.get(date) ?? {
+        date,
+        totalAmount: 0,
+        billCount: 0,
+        tenantCount: 0,
+        payments: [],
+      };
+      batch.totalAmount += bill.paidAmount;
+      batch.billCount += 1;
+      batch.payments.push({
+        billId: bill.id,
+        billNo: bill.billNo,
+        tenantId: bill.tenantId,
+        tenantName: tenant.name,
+        period: bill.periodStart.slice(0, 7),
+        periodStart: bill.periodStart,
+        periodEnd: bill.periodEnd,
+        amount: bill.paidAmount,
+        paidAt: bill.paidAt,
+      });
+      batchMap.set(date, batch);
+    }
+
+    for (const batch of batchMap.values()) {
+      const tenantSet = new Set(batch.payments.map(p => p.tenantId));
+      batch.tenantCount = tenantSet.size;
+    }
+
+    return Array.from(batchMap.values()).sort((a, b) => b.date.localeCompare(a.date));
+  }, [bills, tenants, selectedPeriod, selectedUnit, searchKeyword]);
 
   return (
     <div className="space-y-6">
@@ -580,6 +666,26 @@ export default function BillListPage() {
               </div>
             )}
 
+            {/* 仓号筛选 */}
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-ink-600 whitespace-nowrap">仓号：</span>
+              <div className="relative">
+                <select
+                  value={selectedUnit}
+                  onChange={(e) => setSelectedUnit(e.target.value)}
+                  className="h-9 pl-3 pr-8 text-sm rounded-md border border-ink-200 bg-white outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400 appearance-none cursor-pointer"
+                >
+                  <option value="all">全部仓号</option>
+                  {storageUnits.map((unit) => (
+                    <option key={unit.id} value={unit.id}>
+                      {unit.code}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="w-4 h-4 text-ink-400 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+              </div>
+            </div>
+
             {/* 租户搜索 */}
             <div className="flex-1 min-w-[240px] max-w-md">
               <div className="relative">
@@ -631,18 +737,56 @@ export default function BillListPage() {
           />
         </>
       ) : (
-        <ReconciliationView
-          rows={reconciliationRows}
-          summary={reconciliationSummary}
-          onOpenDetail={(tid, period) => {
-            setDetailTenantId(tid);
-            setDetailPeriod(period);
-          }}
-          onPayBill={(billId) => {
-            setCurrentPayBillId(billId);
-            setConfirmPaidOpen(true);
-          }}
-        />
+        <div className="space-y-5">
+          {/* 对账子视图切换 */}
+          <div className="flex items-center gap-2 bg-ink-50 rounded-lg border border-ink-200 p-1 w-fit">
+            {[
+              { value: 'tenant', label: '按租户汇总', icon: Users },
+              { value: 'payment', label: '按收款日期', icon: CalendarCheck },
+            ].map(opt => {
+              const isActive = reconMode === opt.value;
+              const Icon = opt.icon;
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setReconMode(opt.value as 'tenant' | 'payment')}
+                  className={cn(
+                    'flex items-center gap-1.5 h-9 px-4 rounded-md text-sm font-medium transition-colors',
+                    isActive
+                      ? 'bg-white text-brand-700 shadow-sm border border-ink-200'
+                      : 'text-ink-500 hover:text-ink-700',
+                  )}
+                >
+                  <Icon className="w-4 h-4" />
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {reconMode === 'tenant' ? (
+            <ReconciliationView
+              rows={reconciliationRows}
+              summary={reconciliationSummary}
+              onOpenDetail={(tid, period) => {
+                setDetailTenantId(tid);
+                setDetailPeriod(period);
+              }}
+              onPayBill={(billId) => {
+                setCurrentPayBillId(billId);
+                setConfirmPaidOpen(true);
+              }}
+            />
+          ) : (
+            <PaymentBatchView
+              batches={paymentBatches}
+              onOpenDetail={(date) => {
+                setDetailPaymentDate(date);
+              }}
+            />
+          )}
+        </div>
       )}
 
       {/* 对账详情 Modal */}
@@ -659,6 +803,17 @@ export default function BillListPage() {
           setCurrentPayBillId(billId);
           setConfirmPaidOpen(true);
         }}
+      />
+
+      {/* 收款批次详情 Modal */}
+      <PaymentBatchDetailModal
+        open={detailPaymentDate !== null}
+        onClose={() => setDetailPaymentDate(null)}
+        date={detailPaymentDate ?? ''}
+        batches={paymentBatches}
+        accessGrants={accessGrants}
+        tenants={tenants}
+        bills={bills}
       />
 
       {/* 单个标记已支付确认弹窗 */}
@@ -1280,6 +1435,325 @@ function ReconciliationDetailModal({
             </div>
           </div>
         )}
+      </div>
+    </Modal>
+  );
+}
+
+// ==================== 收款批次视图 ====================
+interface PaymentBatchViewProps {
+  batches: PaymentBatch[];
+  onOpenDetail: (date: string) => void;
+}
+
+function PaymentBatchView({ batches, onOpenDetail }: PaymentBatchViewProps) {
+  const totalStats = useMemo(() => {
+    return batches.reduce((acc, b) => {
+      acc.totalAmount += b.totalAmount;
+      acc.billCount += b.billCount;
+      acc.tenantCount += b.tenantCount;
+      return acc;
+    }, { totalAmount: 0, billCount: 0, tenantCount: 0 });
+  }, [batches]);
+
+  const statsCards = [
+    { label: '累计收款', value: `¥${totalStats.totalAmount.toFixed(2)}`, icon: DollarSign, tone: 'success' },
+    { label: '收款笔数', value: totalStats.billCount, icon: Receipt, tone: 'brand' },
+    { label: '涉及租户', value: totalStats.tenantCount, icon: Users, tone: 'amber' },
+    { label: '收款天数', value: `${batches.length} 天`, icon: CalendarCheck, tone: 'slate' },
+  ];
+
+  return (
+    <div className="space-y-5">
+      {/* 汇总卡片 */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {statsCards.map((card) => {
+          const Icon = card.icon;
+          const toneClass: Record<string, string> = {
+            success: 'text-emerald-600 bg-emerald-50',
+            brand: 'text-brand-600 bg-brand-50',
+            amber: 'text-amber-600 bg-amber-50',
+            slate: 'text-ink-600 bg-ink-50',
+          };
+          return (
+            <div key={card.label} className="rounded-lg border border-ink-200 bg-white p-4">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs text-ink-500">{card.label}</span>
+                <div className={cn('w-7 h-7 rounded-md flex items-center justify-center', toneClass[card.tone])}>
+                  <Icon className="w-4 h-4" />
+                </div>
+              </div>
+              <div className="text-xl font-bold font-mono text-ink-800">
+                {card.value}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* 收款日期列表 */}
+      <div className="space-y-3">
+        <h4 className="text-sm font-semibold text-ink-700 flex items-center gap-2">
+          <span className="w-2 h-2 rounded-full bg-brand-500" />
+          收款日期明细（共 {batches.length} 天）
+        </h4>
+        {batches.length === 0 ? (
+          <div className="rounded-lg border border-ink-200 bg-ink-50 p-8 text-center text-sm text-ink-400 italic">
+            暂无收款记录
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {batches.map((batch) => (
+              <div
+                key={batch.date}
+                className="rounded-lg border border-ink-200 bg-white hover:border-brand-300 hover:shadow-sm transition-all cursor-pointer"
+                onClick={() => onOpenDetail(batch.date)}
+              >
+                <div className="p-4 flex items-center justify-between">
+                  <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 rounded-lg bg-brand-50 text-brand-700 flex flex-col items-center justify-center shrink-0">
+                      <div className="text-xs font-medium">{batch.date.slice(5, 7)}月</div>
+                      <div className="text-lg font-bold leading-none">{batch.date.slice(8, 10)}</div>
+                    </div>
+                    <div>
+                      <div className="text-sm font-semibold text-ink-800">
+                        {batch.date} 收款
+                      </div>
+                      <div className="text-xs text-ink-500 mt-0.5">
+                        {batch.billCount} 笔账单 · {batch.tenantCount} 位租户
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <div className="text-right">
+                      <div className="text-lg font-bold font-mono text-success-700">
+                        ¥{batch.totalAmount.toFixed(2)}
+                      </div>
+                      <div className="text-xs text-ink-400">当日收款</div>
+                    </div>
+                    <ChevronDown className="w-4 h-4 text-ink-400" />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ==================== 收款批次详情 Modal ====================
+interface PaymentBatchDetailModalProps {
+  open: boolean;
+  onClose: () => void;
+  date: string;
+  batches: PaymentBatch[];
+  accessGrants: AccessGrant[];
+  tenants: Tenant[];
+  bills: Bill[];
+}
+
+function PaymentBatchDetailModal({
+  open,
+  onClose,
+  date,
+  batches,
+  accessGrants,
+  tenants,
+  bills,
+}: PaymentBatchDetailModalProps) {
+  const batch = batches.find(b => b.date === date);
+
+  const tenantGroups = useMemo(() => {
+    if (!batch) return [];
+    const map = new Map<string, {
+      tenantId: string;
+      tenantName: string;
+      payments: PaymentRecord[];
+      totalPaid: number;
+      beforeDebt: number;
+      afterDebt: number;
+      hasFrozenBefore: boolean;
+      hasFrozenAfter: boolean;
+    }>();
+
+    for (const p of batch.payments) {
+      const group = map.get(p.tenantId) ?? {
+        tenantId: p.tenantId,
+        tenantName: p.tenantName,
+        payments: [],
+        totalPaid: 0,
+        beforeDebt: 0,
+        afterDebt: 0,
+        hasFrozenBefore: false,
+        hasFrozenAfter: false,
+      };
+      group.payments.push(p);
+      group.totalPaid += p.amount;
+      map.set(p.tenantId, group);
+    }
+
+    for (const group of map.values()) {
+      const tenantBills = bills.filter(b => b.tenantId === group.tenantId);
+      let beforeDebt = 0;
+      let afterDebt = 0;
+      for (const b of tenantBills) {
+        const unpaid = Math.max(0, b.totalAmount - b.paidAmount);
+        if (b.status === 'paid') {
+          beforeDebt += b.totalAmount;
+        } else {
+          beforeDebt += unpaid;
+          afterDebt += unpaid;
+        }
+      }
+      group.beforeDebt = beforeDebt;
+      group.afterDebt = afterDebt;
+
+      const frozenGrants = accessGrants.filter(
+        g => g.tenantId === group.tenantId && g.status === 'frozen'
+      );
+      group.hasFrozenAfter = frozenGrants.length > 0;
+      group.hasFrozenBefore = true;
+    }
+
+    return Array.from(map.values()).sort((a, b) => b.totalPaid - a.totalPaid);
+  }, [batch, bills, accessGrants]);
+
+  if (!batch) return null;
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      maxWidth="lg"
+      title={
+        <div className="flex items-center gap-2">
+          <CalendarCheck className="w-5 h-5 text-brand-500" />
+          收款明细 — {date}
+        </div>
+      }
+    >
+      <div className="space-y-5">
+        {/* 汇总卡 */}
+        <div className="grid grid-cols-3 gap-3">
+          <div className="rounded-lg border border-success-200 bg-success-50 p-3">
+            <div className="text-xs text-success-600 mb-1">当日收款</div>
+            <div className="text-xl font-bold font-mono text-success-700">
+              ¥{batch.totalAmount.toFixed(2)}
+            </div>
+          </div>
+          <div className="rounded-lg border border-brand-200 bg-brand-50 p-3">
+            <div className="text-xs text-brand-600 mb-1">收款笔数</div>
+            <div className="text-xl font-bold font-mono text-brand-700">
+              {batch.billCount} 笔
+            </div>
+          </div>
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+            <div className="text-xs text-amber-600 mb-1">涉及租户</div>
+            <div className="text-xl font-bold font-mono text-amber-700">
+              {batch.tenantCount} 位
+            </div>
+          </div>
+        </div>
+
+        {/* 按租户分组明细 */}
+        <div className="space-y-3">
+          <h4 className="text-sm font-semibold text-ink-700 flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-brand-500" />
+            按租户汇总
+          </h4>
+          {tenantGroups.map((group) => (
+            <div
+              key={group.tenantId}
+              className="rounded-lg border border-ink-200 bg-white overflow-hidden"
+            >
+              <div className="p-4 bg-ink-50 border-b border-ink-100 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-full bg-brand-100 text-brand-700 flex items-center justify-center text-sm font-bold">
+                    {group.tenantName.charAt(0)}
+                  </div>
+                  <div>
+                    <div className="font-medium text-ink-800 text-sm">{group.tenantName}</div>
+                    <div className="text-xs text-ink-500">
+                      本次付 {group.payments.length} 笔
+                    </div>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="text-base font-bold font-mono text-success-700">
+                    +¥{group.totalPaid.toFixed(2)}
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-4 space-y-3">
+                {/* 欠费变化 */}
+                <div className="grid grid-cols-3 gap-3 text-center">
+                  <div className="p-2 rounded bg-danger-50">
+                    <div className="text-xs text-danger-600 mb-1">付款前欠费</div>
+                    <div className="font-mono font-semibold text-danger-700 text-sm">
+                      ¥{group.beforeDebt.toFixed(2)}
+                    </div>
+                  </div>
+                  <div className="p-2 rounded bg-success-50">
+                    <div className="text-xs text-success-600 mb-1">本次还款</div>
+                    <div className="font-mono font-semibold text-success-700 text-sm">
+                      -¥{group.totalPaid.toFixed(2)}
+                    </div>
+                  </div>
+                  <div className="p-2 rounded bg-ink-50">
+                    <div className="text-xs text-ink-600 mb-1">当前欠费</div>
+                    <div className={cn(
+                      'font-mono font-semibold text-sm',
+                      group.afterDebt > 0 ? 'text-danger-700' : 'text-success-700',
+                    )}>
+                      ¥{group.afterDebt.toFixed(2)}
+                    </div>
+                  </div>
+                </div>
+
+                {/* 门禁状态 */}
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-ink-500">门禁状态</span>
+                  <div className="flex items-center gap-2">
+                    <ShieldAlert className="w-4 h-4 text-amber-500" />
+                    <span>
+                      {group.hasFrozenAfter
+                        ? '仍有冻结门禁（欠费未结清）'
+                        : group.afterDebt > 0
+                          ? '存在欠费但未冻结'
+                          : '无冻结，已自动恢复'
+                      }
+                    </span>
+                  </div>
+                </div>
+
+                {/* 账单明细 */}
+                <div className="space-y-1.5">
+                  <div className="text-xs text-ink-500 font-medium">本次付款账单：</div>
+                  {group.payments.map((p) => (
+                    <div
+                      key={p.billId}
+                      className="flex items-center justify-between text-sm py-1.5 px-2 rounded hover:bg-ink-50"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Receipt className="w-3.5 h-3.5 text-brand-400" />
+                        <span className="font-mono text-ink-600">{p.billNo}</span>
+                        <span className="text-xs text-ink-400">
+                          {p.period} 账期
+                        </span>
+                      </div>
+                      <span className="font-mono text-success-700 font-medium">
+                        ¥{p.amount.toFixed(2)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     </Modal>
   );

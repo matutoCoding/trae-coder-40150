@@ -20,6 +20,7 @@ import type {
   Bill,
   BillItem,
   AccessGrant,
+  AccessGrantEvent,
   AuditLog,
   TierChangePayload,
   QuotaAdjustPayload,
@@ -150,7 +151,7 @@ interface AppStoreActions {
   freezeAccess: (id: string, reason: string) => void;
   unfreezeAccess: (id: string) => void;
   createAccessGrant: (
-    payload: Omit<AccessGrant, 'id' | 'status' | 'createdAt'>
+    payload: Omit<AccessGrant, 'id' | 'status' | 'createdAt' | 'events'> & { events?: AccessGrantEvent[] }
   ) => void;
   // UI 状态
   setSelectedTenantId: (id: string | null) => void;
@@ -690,9 +691,19 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const grant = store.accessGrants.find(g => g.id === id);
     if (!grant) return;
     const before = { ...grant };
+    const event: AccessGrantEvent = {
+      id: uid('EV'),
+      type: 'frozen',
+      time: nowStr(),
+      operatorId: store.session?.operatorId,
+      operatorName: store.session?.operatorName,
+      reason,
+    };
+    const currentEvents = grant.events ?? [];
     const updated = update<AccessGrant>(COLLECTION_KEYS.accessGrants, id, {
       status: 'frozen',
       frozenReason: reason,
+      events: [...currentEvents, event],
     });
     set({
       accessGrants: store.accessGrants.map(g =>
@@ -714,9 +725,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const grant = store.accessGrants.find(g => g.id === id);
     if (!grant) return;
     const before = { ...grant };
+    const event: AccessGrantEvent = {
+      id: uid('EV'),
+      type: 'unfrozen',
+      time: nowStr(),
+      operatorId: store.session?.operatorId,
+      operatorName: store.session?.operatorName,
+    };
+    const currentEvents = grant.events ?? [];
     const updated = update<AccessGrant>(COLLECTION_KEYS.accessGrants, id, {
       status: 'active',
       frozenReason: undefined,
+      events: [...currentEvents, event],
     });
     set({
       accessGrants: store.accessGrants.map(g =>
@@ -734,7 +754,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   createAccessGrant: (
-    payload: Omit<AccessGrant, 'id' | 'status' | 'createdAt'>
+    payload: Omit<AccessGrant, 'id' | 'status' | 'createdAt' | 'events'> & { events?: AccessGrantEvent[] }
   ) => {
     const store = get();
 
@@ -742,38 +762,57 @@ export const useAppStore = create<AppStore>((set, get) => ({
       g => g.unitId === payload.unitId && (g.status === 'active' || g.status === 'frozen')
     );
     const expiredGrants: AccessGrant[] = [];
+
+    const newGrantId = uid('AG');
+    const newTenant = store.tenants.find(t => t.id === payload.tenantId);
+
     for (const old of existingGrants) {
+      const supersededEvent: AccessGrantEvent = {
+        id: uid('EV'),
+        type: 'superseded',
+        time: nowStr(),
+        operatorId: store.session?.operatorId,
+        operatorName: store.session?.operatorName,
+        relatedGrantId: newGrantId,
+        relatedGrantTenantName: newTenant?.name,
+      };
+      const oldEvents = old.events ?? [];
       const updated = update<AccessGrant>(COLLECTION_KEYS.accessGrants, old.id, {
         status: 'expired',
         frozenReason: undefined,
+        supersededByGrantId: newGrantId,
+        events: [...oldEvents, supersededEvent],
       });
       expiredGrants.push(updated);
     }
 
+    const createdEvent: AccessGrantEvent = {
+      id: uid('EV'),
+      type: 'created',
+      time: nowStr(),
+      operatorId: store.session?.operatorId,
+      operatorName: store.session?.operatorName,
+    };
+
     const grant: AccessGrant = {
-      id: uid('AG'),
+      id: newGrantId,
       tenantId: payload.tenantId,
       unitId: payload.unitId,
       startDate: payload.startDate,
       endDate: payload.endDate,
       status: 'active',
       createdAt: nowStr(),
+      createdBy: store.session?.operatorId,
+      createdByName: store.session?.operatorName,
+      events: [createdEvent],
     };
     const saved = insert<AccessGrant>(COLLECTION_KEYS.accessGrants, grant);
 
-    for (const oldId of expiredGrants.map(g => g.id)) {
-      update<AccessGrant>(COLLECTION_KEYS.accessGrants, oldId, {
-        supersededByGrantId: saved.id,
-      });
-    }
-
     let newGrants: AccessGrant[];
     if (expiredGrants.length > 0) {
-      const expiredIds = new Set(expiredGrants.map(g => g.id));
+      const expiredMap = new Map(expiredGrants.map(g => [g.id, g]));
       newGrants = [
-        ...store.accessGrants.map(g => expiredIds.has(g.id)
-          ? { ...g, status: 'expired' as const, frozenReason: undefined, supersededByGrantId: saved.id }
-          : g),
+        ...store.accessGrants.map(g => expiredMap.has(g.id) ? expiredMap.get(g.id)! : g),
         saved,
       ];
     } else {
