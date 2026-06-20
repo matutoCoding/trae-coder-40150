@@ -32,7 +32,7 @@ export function calculateCarryQuota(
 
   if (isUpgrade) {
     strategy = 'ratio';
-    ratio = toTier.upgradeCarryRatio;
+    ratio = fromTier.upgradeCarryRatio;
     const rawQuota = round(currentQuota * (toTier.freeQuota / fromTier.freeQuota) * ratio);
     newQuota = Math.min(rawQuota, toTier.freeQuota);
     calculation = `${currentQuota} × (${toTier.freeQuota}/${fromTier.freeQuota}) × ${ratio} = ${rawQuota}${rawQuota > toTier.freeQuota ? `，上限 ${toTier.freeQuota}` : ''}`;
@@ -43,7 +43,7 @@ export function calculateCarryQuota(
       calculation = `降级清零，新额度 = ${toTier.freeQuota}`;
     } else {
       strategy = 'ratio';
-      ratio = toTier.downgradeCarryRatio;
+      ratio = fromTier.downgradeCarryRatio;
       const rawQuota = round(currentQuota * (toTier.freeQuota / fromTier.freeQuota) * ratio);
       newQuota = Math.min(rawQuota, toTier.freeQuota);
       calculation = `${currentQuota} × (${toTier.freeQuota}/${fromTier.freeQuota}) × ${ratio} = ${rawQuota}${rawQuota > toTier.freeQuota ? `，上限 ${toTier.freeQuota}` : ''}`;

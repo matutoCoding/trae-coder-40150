@@ -103,7 +103,9 @@ export default function AccessControlPage() {
   // 为每个仓库单元找到对应的授权记录
   const getGrantForUnit = useCallback(
     (unitId: string): AccessGrant | undefined => {
-      return accessGrants.find((g) => g.unitId === unitId);
+      const grants = accessGrants.filter((g) => g.unitId === unitId && g.status !== 'expired');
+      if (grants.length === 0) return undefined;
+      return grants[grants.length - 1];
     },
     [accessGrants],
   );

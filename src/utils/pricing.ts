@@ -16,12 +16,12 @@ export function calculateRental(
   let subtotal: number;
   let remark: string;
 
-  if (days < rule.minDays) {
+  if (days <= rule.minDays) {
     pricingType = 'min';
     unitPrice = roundMoney(rule.minPrice);
     subtotal = roundMoney(rule.minPrice * units);
     remark = '起步价';
-  } else if (days > rule.maxDays) {
+  } else if (days >= rule.maxDays) {
     pricingType = 'max';
     unitPrice = roundMoney(rule.maxPrice);
     subtotal = roundMoney(rule.maxPrice * units);

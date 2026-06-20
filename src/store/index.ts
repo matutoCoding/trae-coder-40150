@@ -8,6 +8,7 @@ import {
   COLLECTION_KEYS,
 } from '../data/db';
 import { calculateRental } from '../utils/pricing';
+import { calculateCarryQuota } from '../utils/quota';
 import type {
   TenantTier,
   Tenant,
@@ -261,36 +262,17 @@ export const useAppStore = create<AppStore>((set, get) => ({
     if (!fromTier || !toTier) return;
 
     const beforeTenant = { ...tenant };
-    const isUpgrade = toTier.level > fromTier.level;
-
-    // 决定结转策略
-    let carryStrategy: 'ratio' | 'reset';
-    let carryRatio: number | undefined;
-    let quotaAfter: number;
-    let calculation: string;
     const quotaBefore = tenant.currentQuota;
 
-    if (isUpgrade) {
-      // 升级：使用 fromTier 的升级结转比例
-      carryStrategy = 'ratio';
-      carryRatio = fromTier.upgradeCarryRatio;
-      const carryAmount = Math.floor(quotaBefore * carryRatio);
-      quotaAfter = toTier.freeQuota + carryAmount;
-      calculation = `升级：旧额度(${quotaBefore}) × 结转比例(${carryRatio}) + 新等级基础(${toTier.freeQuota}) = ${quotaAfter}`;
-    } else {
-      // 降级
-      if (toTier.resetOnDowngrade) {
-        carryStrategy = 'reset';
-        quotaAfter = toTier.freeQuota;
-        calculation = `降级清零，新等级基础额度: ${toTier.freeQuota}`;
-      } else {
-        carryStrategy = 'ratio';
-        carryRatio = fromTier.downgradeCarryRatio;
-        const carryAmount = Math.floor(quotaBefore * carryRatio);
-        quotaAfter = toTier.freeQuota + carryAmount;
-        calculation = `降级：旧额度(${quotaBefore}) × 结转比例(${carryRatio}) + 新等级基础(${toTier.freeQuota}) = ${quotaAfter}`;
-      }
-    }
+    const carryResult = calculateCarryQuota({
+      currentQuota: quotaBefore,
+      fromTier,
+      toTier,
+    });
+    const carryStrategy = carryResult.strategy;
+    const carryRatio = carryResult.ratio;
+    const quotaAfter = carryResult.newQuota;
+    const calculation = carryResult.calculation;
 
     // 1. 写入等级变更记录
     const tierChangeId = uid('TCR');
@@ -532,7 +514,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const billId = uid('BILL');
 
       for (const contract of tenantContracts) {
-        // 计算合同在账期内的有效天数
         const cStart = new Date(contract.startDate);
         const cEnd = contract.endDate
           ? new Date(contract.endDate)
@@ -541,13 +522,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
         const pEnd = new Date(periodEnd);
         const effectiveStart = cStart > pStart ? cStart : pStart;
         const effectiveEnd = cEnd < pEnd ? cEnd : pEnd;
-        const days = Math.max(
-          1,
-          Math.ceil(
-            (effectiveEnd.getTime() - effectiveStart.getTime()) /
-              (1000 * 60 * 60 * 24)
-          )
+
+        if (effectiveStart >= effectiveEnd) continue;
+
+        const days = Math.ceil(
+          (effectiveEnd.getTime() - effectiveStart.getTime()) /
+            (1000 * 60 * 60 * 24)
         );
+        if (days <= 0) continue;
 
         // 找到对应仓库单元
         const unit = storageUnits.find(u => u.id === contract.unitId);
@@ -717,6 +699,19 @@ export const useAppStore = create<AppStore>((set, get) => ({
     payload: Omit<AccessGrant, 'id' | 'status' | 'createdAt'>
   ) => {
     const store = get();
+
+    const existingGrants = store.accessGrants.filter(
+      g => g.unitId === payload.unitId && (g.status === 'active' || g.status === 'frozen')
+    );
+    const expiredGrants: AccessGrant[] = [];
+    for (const old of existingGrants) {
+      const updated = update<AccessGrant>(COLLECTION_KEYS.accessGrants, old.id, {
+        status: 'expired',
+        frozenReason: undefined,
+      });
+      expiredGrants.push(updated);
+    }
+
     const grant: AccessGrant = {
       id: uid('AG'),
       tenantId: payload.tenantId,
@@ -727,7 +722,29 @@ export const useAppStore = create<AppStore>((set, get) => ({
       createdAt: nowStr(),
     };
     const saved = insert<AccessGrant>(COLLECTION_KEYS.accessGrants, grant);
-    set({ accessGrants: [...store.accessGrants, saved] });
+
+    let newGrants: AccessGrant[];
+    if (expiredGrants.length > 0) {
+      const expiredIds = new Set(expiredGrants.map(g => g.id));
+      newGrants = [
+        ...store.accessGrants.map(g => expiredIds.has(g.id) ? expiredGrants.find(e => e.id === g.id)! : g),
+        saved,
+      ];
+    } else {
+      newGrants = [...store.accessGrants, saved];
+    }
+    set({ accessGrants: newGrants });
+
+    for (const old of existingGrants) {
+      writeAudit(
+        get(),
+        'access.expire',
+        'AccessGrant',
+        old.id,
+        { status: old.status, tenantId: old.tenantId },
+        { status: 'expired' }
+      );
+    }
     writeAudit(
       get(),
       'access.grant',
